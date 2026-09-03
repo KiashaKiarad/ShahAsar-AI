@@ -1,5 +1,7 @@
 const { detectJurisdiction } = require("./jurisdiction");
 const { localRag } = require("./local-rag");
+const { retrieveEvidence } = require("./retriever");
+const { filterEvidence } = require("./evidence");
 
 function buildLegalSystemPrompt(jurisdiction, evidence = []) {
   const jurisdictionText = jurisdiction
@@ -42,26 +44,22 @@ function createLegalRequest({ message, jurisdiction, evidence, asOfDate, topK = 
     requestedJurisdiction: jurisdiction
   });
 
-  const requestedEvidence = Array.isArray(evidence)
-    ? evidence
+  const evidencePool = Array.isArray(evidence)
+    ? filterEvidence(evidence, {
+        jurisdiction: detection.jurisdiction?.code,
+        asOfDate
+      })
     : localRag.list({
         jurisdiction: detection.jurisdiction?.code,
         asOfDate
       });
 
-  const retrieved = Array.isArray(evidence)
-    ? require("./local-rag").createLocalRag().search(message, {
-        jurisdiction: detection.jurisdiction?.code,
-        asOfDate,
-        topK,
-        minScore: 0
-      })
-    : localRag.search(message, {
-        jurisdiction: detection.jurisdiction?.code,
-        asOfDate,
-        topK,
-        minScore: 0
-      });
+  const retrieved = retrieveEvidence(message, evidencePool, {
+    jurisdiction: detection.jurisdiction?.code,
+    asOfDate,
+    topK,
+    minScore: 0
+  });
 
   const retrievedEvidence = retrieved.map((item) => item.evidence);
 

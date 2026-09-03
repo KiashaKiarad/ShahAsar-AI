@@ -1,4 +1,5 @@
 const { URL } = require("url");
+const { spawn } = require("child_process");
 const axios = require("axios");
 const { validateSourceUrl } = require("./ingestion-policy");
 const { parseLegalPage } = require("./corpus-parser");
@@ -15,6 +16,9 @@ const DEFAULT_INTERVAL_MS = Number(process.env.LEGAL_AGENT_INTERVAL_MS || 15 * 6
 const MAX_DISCOVERY_LINKS = Number(process.env.LEGAL_AGENT_DISCOVERY_LIMIT || 5000);
 const MAX_URLS_PER_RUN = Number(process.env.LEGAL_AGENT_URLS_PER_RUN || 120);
 const REQUEST_TIMEOUT_MS = Number(process.env.LEGAL_AGENT_DISCOVERY_TIMEOUT_MS || 10000);
+const MAX_DOCUMENT_BYTES = Number(process.env.LEGAL_AGENT_MAX_DOCUMENT_BYTES || 8 * 1024 * 1024);
+const PDF_TEXT_TIMEOUT_MS = Number(process.env.LEGAL_AGENT_PDF_TIMEOUT_MS || 15000);
+const PDF_TEXT_MAX_BYTES = Number(process.env.LEGAL_AGENT_PDF_TEXT_MAX_BYTES || 2 * 1024 * 1024);
 
 const notifications = createNotificationStore();
 const watches = createLegalWatchStore();
@@ -32,15 +36,89 @@ function isLikelyDocumentUrl(url) {
   return !/\.(css|js|png|jpg|jpeg|gif|svg|ico|zip|rar|7z|mp4|mp3|webp|woff2?|ttf)(\?|$)/i.test(url);
 }
 
-async function fetchHtml(url) {
+function isPdfUrl(url) {
+  return /\.pdf(?:\?|$)/i.test(url);
+}
+
+function looksLikePdf(buffer) {
+  return Buffer.isBuffer(buffer) && buffer.subarray(0, 5).toString("ascii") === "%PDF-";
+}
+
+function extractPdfText(buffer) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pdftotext", ["-layout", "-", "-"], {
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    const output = [];
+    const errors = [];
+    let outputBytes = 0;
+    let settled = false;
+
+    const finish = (error, text) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve(text);
+    };
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error("PDF_TEXT_EXTRACTION_TIMEOUT"));
+    }, PDF_TEXT_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > PDF_TEXT_MAX_BYTES) {
+        clearTimeout(timer);
+        child.kill("SIGKILL");
+        finish(new Error("PDF_TEXT_OUTPUT_LIMIT_EXCEEDED"));
+        return;
+      }
+      output.push(chunk);
+    });
+
+    child.stderr.on("data", (chunk) => errors.push(chunk));
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      finish(new Error(`PDF_TEXT_EXTRACTION_FAILED:${error.message}`));
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      if (code !== 0) {
+        const detail = Buffer.concat(errors).toString("utf8").trim();
+        finish(new Error(`PDF_TEXT_EXTRACTION_EXIT_${code}${detail ? `:${detail.slice(0, 300)}` : ""}`));
+        return;
+      }
+      finish(null, Buffer.concat(output).toString("utf8"));
+    });
+
+    child.stdin.on("error", (error) => {
+      clearTimeout(timer);
+      finish(new Error(`PDF_INPUT_FAILED:${error.message}`));
+    });
+
+    child.stdin.end(buffer);
+  });
+}
+
+async function fetchDocument(url) {
   const checked = validateSourceUrl(url);
   if (!checked.valid) throw new Error(`SOURCE_URL_REJECTED:${checked.reason}`);
+
   const response = await axios.get(checked.url.toString(), {
     timeout: REQUEST_TIMEOUT_MS,
     maxRedirects: 0,
-    responseType: "text",
+    responseType: "arraybuffer",
+    maxContentLength: MAX_DOCUMENT_BYTES,
+    maxBodyLength: MAX_DOCUMENT_BYTES,
     validateStatus: (status) => status >= 200 && status < 300,
-    headers: { Accept: "text/html,application/xhtml+xml,text/plain;q=0.9" }
+    headers: {
+      Accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9"
+    }
   });
 
   const location = response.headers.location;
@@ -49,9 +127,21 @@ async function fetchHtml(url) {
     if (!redirected || !sameOriginAllowed(checked.url.toString(), redirected)) {
       throw new Error("SOURCE_REDIRECT_OUTSIDE_ORIGIN_REJECTED");
     }
+    throw new Error("SOURCE_REDIRECT_NOT_FOLLOWED");
   }
 
-  return String(response.data || "");
+  const bytes = Buffer.from(response.data || []);
+  const contentType = String(response.headers["content-type"] || "").toLowerCase();
+  const pdf = contentType.includes("application/pdf") || isPdfUrl(url) || looksLikePdf(bytes);
+
+  if (pdf) {
+    if (!looksLikePdf(bytes)) throw new Error("PDF_SIGNATURE_INVALID");
+    const text = await extractPdfText(bytes);
+    return { kind: "pdf", text, contentType, bytes: bytes.length };
+  }
+
+  const text = bytes.toString("utf8");
+  return { kind: "html", text, contentType, bytes: bytes.length };
 }
 
 function extractPageLinks(baseUrl, html, limit = MAX_DISCOVERY_LINKS) {
@@ -162,10 +252,10 @@ async function runLegalAgentOnce() {
     for (const url of urls) {
       try {
         if (!sameOriginAllowed(source.url, url)) throw new Error("SOURCE_ORIGIN_REJECTED");
-        const html = await fetchHtml(url);
-        const nextLinks = extractPageLinks(url, html, MAX_DISCOVERY_LINKS);
+        const document = await fetchDocument(url);
+        const nextLinks = document.kind === "html" ? extractPageLinks(url, document.text, MAX_DISCOVERY_LINKS) : [];
         crawlState.addDiscovered(source.id, nextLinks);
-        const parsed = parseLegalPage({ source, url, html });
+        const parsed = parseLegalPage({ source, url, html: document.text });
         candidates.push(...parsed);
         crawlState.markVisited(source.id, url);
         visited += 1;
@@ -271,5 +361,6 @@ module.exports = {
   startLegalAgent,
   notifications,
   watches,
-  crawlState
+  crawlState,
+  extractPdfText
 };

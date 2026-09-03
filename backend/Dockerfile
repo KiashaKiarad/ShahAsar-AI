@@ -12,13 +12,19 @@ WORKDIR /app
 # Set production environment
 ENV NODE_ENV="production"
 
+# PDF legal sources are converted locally by pdftotext.
+# No external service is contacted during user queries or ingestion.
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y poppler-utils && \
+    rm -rf /var/lib/apt/lists/*
 
 # Throw-away build stage to reduce size of final image
 FROM base AS build
 
 # Install packages needed to build node modules
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential node-gyp pkg-config python-is-python3
+    apt-get install --no-install-recommends -y build-essential node-gyp pkg-config python-is-python3 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install node modules
 COPY package-lock.json package.json ./

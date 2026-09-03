@@ -38,35 +38,14 @@ function sameOriginAllowed(baseUrl, candidateUrl) { try { return new URL(baseUrl
 function isLikelyDocumentUrl(url) { return !/\.(css|js|png|jpg|jpeg|gif|svg|ico|zip|rar|7z|mp4|mp3|webp|woff2?|ttf)(\?|$)/i.test(url); }
 function isPdfUrl(url) { return /\.pdf(?:\?|$)/i.test(url); }
 function looksLikePdf(buffer) { return Buffer.isBuffer(buffer) && buffer.subarray(0, 5).toString("ascii") === "%PDF-"; }
-
-function freeDiskBytes(targetPath = process.cwd()) {
-  try {
-    if (typeof fs.statfsSync !== "function") return null;
-    const stat = fs.statfsSync(targetPath);
-    return Number(stat.bavail) * Number(stat.bsize);
-  } catch {
-    return null;
-  }
-}
-
-function storageSafe() {
-  const free = freeDiskBytes(process.cwd());
-  return free !== null && free >= MIN_FREE_DISK_BYTES;
-}
-
-function approvedSources() {
-  return listEnabledCountrySources().filter((source) => {
-    if (!isSupportedJurisdiction(source.jurisdiction)) return false;
-    const checked = validateSourceUrl(source.url);
-    return checked.valid;
-  });
-}
+function freeDiskBytes(targetPath = process.cwd()) { try { if (typeof fs.statfsSync !== "function") return null; const stat = fs.statfsSync(targetPath); return Number(stat.bavail) * Number(stat.bsize); } catch { return null; } }
+function storageSafe() { const free = freeDiskBytes(process.cwd()); return free !== null && free >= MIN_FREE_DISK_BYTES; }
+function approvedSources() { return listEnabledCountrySources().filter((source) => isSupportedJurisdiction(source.jurisdiction) && validateSourceUrl(source.url).valid); }
 
 function extractPdfText(buffer) {
   return new Promise((resolve, reject) => {
     const child = spawn("pdftotext", ["-layout", "-", "-"], { stdio: ["pipe", "pipe", "pipe"] });
-    const output = [], errors = [];
-    let outputBytes = 0, settled = false;
+    const output = [], errors = []; let outputBytes = 0; let settled = false;
     const finish = (error, text) => { if (settled) return; settled = true; error ? reject(error) : resolve(text); };
     const timer = setTimeout(() => { child.kill("SIGKILL"); finish(new Error("PDF_TEXT_EXTRACTION_TIMEOUT")); }, PDF_TEXT_TIMEOUT_MS);
     child.stdout.on("data", (chunk) => { outputBytes += chunk.length; if (outputBytes > PDF_TEXT_MAX_BYTES) { clearTimeout(timer); child.kill("SIGKILL"); finish(new Error("PDF_TEXT_OUTPUT_LIMIT_EXCEEDED")); return; } output.push(chunk); });
@@ -111,13 +90,11 @@ async function runLegalAgentOnce() {
   if (!storageSafe()) throw new Error("LEGAL_AGENT_STORAGE_GUARD_TRIGGERED");
   const sources = approvedSources();
   if (!sources.every((source) => SUPPORTED_JURISDICTIONS.includes(source.jurisdiction))) throw new Error("LEGAL_AGENT_UNSUPPORTED_COUNTRY_BLOCKED");
-
   const before = localRag.list({}); const beforeById = new Map(before.map((r) => [r.id, r]));
   const candidates = [], failures = [], discoveredBySource = {}, countryStats = {};
   let visited = 0, notModified = 0, downloadedBytes = 0, budgetStopped = false;
   const cutoff = Date.now() - DEFAULT_RECHECK_MS;
 
-  outer:
   for (const source of sources) {
     try { const discovery = await discoverSourceUrls(source, { maxLinks: MAX_DISCOVERY_LINKS }); discoveredBySource[source.id] = discovery.urls.length; failures.push(...discovery.failures.map((x) => ({ sourceId: source.id, ...x }))); crawlState.seed(source.id, [source.url, ...discovery.urls]); crawlState.requeueDue(source.id, cutoff, MAX_URLS_PER_RUN); }
     catch (error) { failures.push({ sourceId: source.id, url: source.url, error: error.message }); }
@@ -126,7 +103,7 @@ async function runLegalAgentOnce() {
   for (const source of sources) {
     const urls = crawlState.take(source.id, MAX_URLS_PER_RUN);
     for (const url of urls) {
-      if (downloadedBytes >= MAX_RUN_BYTES || candidates.length >= MAX_RECORDS_PER_RUN || !storageSafe()) { budgetStopped = true; break outer; }
+      if (downloadedBytes >= MAX_RUN_BYTES || candidates.length >= MAX_RECORDS_PER_RUN || !storageSafe()) { budgetStopped = true; break; }
       try {
         if (!sameOriginAllowed(source.url, url)) throw new Error("SOURCE_ORIGIN_REJECTED");
         const previous = crawlState.getVisited(source.id, url);
@@ -144,6 +121,7 @@ async function runLegalAgentOnce() {
     }
     crawlState.markRun(source.id);
     countryStats[source.jurisdiction] = [...(countryStats[source.jurisdiction] ? [countryStats[source.jurisdiction]] : []), { sourceId: source.id, crawl: crawlState.stats(source.id) }];
+    if (budgetStopped) break;
   }
 
   const deduped = dedupeById(candidates); const changed = [], archived = []; let unchanged = 0;
@@ -163,12 +141,11 @@ function countryReadiness() {
   const out = {};
   for (const [code, sources] of Object.entries(COUNTRY_LEGAL_SOURCES)) {
     if (!isSupportedJurisdiction(code)) continue;
-    const configured = sources.length > 0;
-    const enabled = sources.some((s) => s.enabled);
     const crawls = sources.map((s) => ({ sourceId: s.id, ...crawlState.stats(s.id) }));
     const exhausted = crawls.reduce((n, x) => n + x.exhaustedFailures, 0);
     const queued = crawls.reduce((n, x) => n + x.queued, 0);
-    out[code] = { configured, enabled, queued, exhaustedFailures: exhausted, sources: crawls, ready: false, reason: enabled ? "bootstrap_and_validation_required" : "not_enabled" };
+    const enabled = sources.some((s) => s.enabled);
+    out[code] = { configured: sources.length > 0, enabled, queued, exhaustedFailures: exhausted, sources: crawls, ready: false, reason: enabled ? "bootstrap_and_validation_required" : "not_enabled" };
   }
   return out;
 }

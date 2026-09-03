@@ -1,3 +1,6 @@
+"use strict";
+
+const fs = require("fs");
 const { URL } = require("url");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
@@ -10,17 +13,21 @@ const { localRag } = require("./local-rag");
 const { createNotificationStore } = require("./notification-store");
 const { createLegalWatchStore } = require("./legal-watch-store");
 const { COUNTRY_LEGAL_SOURCES, listEnabledCountrySources } = require("./country-sources");
+const { SUPPORTED_JURISDICTIONS, isSupportedJurisdiction } = require("./country-policy");
 const { IRAN_SOURCE_TYPES } = require("./iran-source-taxonomy");
 const { ingestEvidence } = require("./ingestor");
 
 const DEFAULT_INTERVAL_MS = Number(process.env.LEGAL_AGENT_INTERVAL_MS || 15 * 60 * 1000);
 const DEFAULT_RECHECK_MS = Number(process.env.LEGAL_AGENT_RECHECK_MS || 24 * 60 * 60 * 1000);
-const MAX_DISCOVERY_LINKS = Number(process.env.LEGAL_AGENT_DISCOVERY_LIMIT || 5000);
-const MAX_URLS_PER_RUN = Number(process.env.LEGAL_AGENT_URLS_PER_RUN || 120);
+const MAX_DISCOVERY_LINKS = Math.min(Number(process.env.LEGAL_AGENT_DISCOVERY_LIMIT || 5000), 5000);
+const MAX_URLS_PER_RUN = Math.min(Number(process.env.LEGAL_AGENT_URLS_PER_RUN || 120), 120);
+const MAX_RECORDS_PER_RUN = Math.min(Number(process.env.LEGAL_AGENT_RECORDS_PER_RUN || 10000), 10000);
+const MAX_RUN_BYTES = Math.min(Number(process.env.LEGAL_AGENT_MAX_RUN_BYTES || 512 * 1024 * 1024), 512 * 1024 * 1024);
+const MIN_FREE_DISK_BYTES = Math.max(Number(process.env.LEGAL_AGENT_MIN_FREE_DISK_BYTES || 2 * 1024 * 1024 * 1024), 512 * 1024 * 1024);
 const REQUEST_TIMEOUT_MS = Number(process.env.LEGAL_AGENT_DISCOVERY_TIMEOUT_MS || 10000);
-const MAX_DOCUMENT_BYTES = Number(process.env.LEGAL_AGENT_MAX_DOCUMENT_BYTES || 8 * 1024 * 1024);
+const MAX_DOCUMENT_BYTES = Math.min(Number(process.env.LEGAL_AGENT_MAX_DOCUMENT_BYTES || 8 * 1024 * 1024), 8 * 1024 * 1024);
 const PDF_TEXT_TIMEOUT_MS = Number(process.env.LEGAL_AGENT_PDF_TIMEOUT_MS || 15000);
-const PDF_TEXT_MAX_BYTES = Number(process.env.LEGAL_AGENT_PDF_TEXT_MAX_BYTES || 2 * 1024 * 1024);
+const PDF_TEXT_MAX_BYTES = Math.min(Number(process.env.LEGAL_AGENT_PDF_TEXT_MAX_BYTES || 2 * 1024 * 1024), 2 * 1024 * 1024);
 
 const notifications = createNotificationStore();
 const watches = createLegalWatchStore();
@@ -31,6 +38,29 @@ function sameOriginAllowed(baseUrl, candidateUrl) { try { return new URL(baseUrl
 function isLikelyDocumentUrl(url) { return !/\.(css|js|png|jpg|jpeg|gif|svg|ico|zip|rar|7z|mp4|mp3|webp|woff2?|ttf)(\?|$)/i.test(url); }
 function isPdfUrl(url) { return /\.pdf(?:\?|$)/i.test(url); }
 function looksLikePdf(buffer) { return Buffer.isBuffer(buffer) && buffer.subarray(0, 5).toString("ascii") === "%PDF-"; }
+
+function freeDiskBytes(targetPath = process.cwd()) {
+  try {
+    if (typeof fs.statfsSync !== "function") return null;
+    const stat = fs.statfsSync(targetPath);
+    return Number(stat.bavail) * Number(stat.bsize);
+  } catch {
+    return null;
+  }
+}
+
+function storageSafe() {
+  const free = freeDiskBytes(process.cwd());
+  return free !== null && free >= MIN_FREE_DISK_BYTES;
+}
+
+function approvedSources() {
+  return listEnabledCountrySources().filter((source) => {
+    if (!isSupportedJurisdiction(source.jurisdiction)) return false;
+    const checked = validateSourceUrl(source.url);
+    return checked.valid;
+  });
+}
 
 function extractPdfText(buffer) {
   return new Promise((resolve, reject) => {
@@ -56,9 +86,10 @@ async function fetchDocument(url, previous = null) {
   if (previous?.lastModified) headers["If-Modified-Since"] = previous.lastModified;
   const response = await axios.get(checked.url.toString(), { timeout: REQUEST_TIMEOUT_MS, maxRedirects: 0, responseType: "arraybuffer", maxContentLength: MAX_DOCUMENT_BYTES, maxBodyLength: MAX_DOCUMENT_BYTES, validateStatus: (status) => (status >= 200 && status < 300) || status === 304, headers });
   const meta = { etag: response.headers.etag || previous?.etag || null, lastModified: response.headers["last-modified"] || previous?.lastModified || null, contentType: String(response.headers["content-type"] || previous?.contentType || "").toLowerCase() };
-  if (response.status === 304) return { kind: "not-modified", status: 304, ...meta };
+  if (response.status === 304) return { kind: "not-modified", status: 304, ...meta, bytes: 0 };
   if (response.headers.location) throw new Error("SOURCE_REDIRECT_NOT_FOLLOWED");
   const bytes = Buffer.from(response.data || []);
+  if (bytes.length > MAX_DOCUMENT_BYTES) throw new Error("DOCUMENT_SIZE_LIMIT_EXCEEDED");
   const pdf = meta.contentType.includes("application/pdf") || isPdfUrl(url) || looksLikePdf(bytes);
   if (pdf) { if (!looksLikePdf(bytes)) throw new Error("PDF_SIGNATURE_INVALID"); return { kind: "pdf", text: await extractPdfText(bytes), bytes: bytes.length, ...meta }; }
   return { kind: "html", text: bytes.toString("utf8"), bytes: bytes.length, ...meta };
@@ -77,12 +108,16 @@ function emitLawUpdateNotifications(previous, current) { if (previous && previou
 function mergeCanonical(existing, incoming, archived) { const map = new Map(); for (const r of existing) map.set(r.id, r); for (const r of archived) map.set(r.id, r); for (const r of incoming) map.set(r.id, r); return [...map.values()]; }
 
 async function runLegalAgentOnce() {
-  const sources = listEnabledCountrySources();
+  if (!storageSafe()) throw new Error("LEGAL_AGENT_STORAGE_GUARD_TRIGGERED");
+  const sources = approvedSources();
+  if (!sources.every((source) => SUPPORTED_JURISDICTIONS.includes(source.jurisdiction))) throw new Error("LEGAL_AGENT_UNSUPPORTED_COUNTRY_BLOCKED");
+
   const before = localRag.list({}); const beforeById = new Map(before.map((r) => [r.id, r]));
   const candidates = [], failures = [], discoveredBySource = {}, countryStats = {};
-  let visited = 0, notModified = 0;
+  let visited = 0, notModified = 0, downloadedBytes = 0, budgetStopped = false;
   const cutoff = Date.now() - DEFAULT_RECHECK_MS;
 
+  outer:
   for (const source of sources) {
     try { const discovery = await discoverSourceUrls(source, { maxLinks: MAX_DISCOVERY_LINKS }); discoveredBySource[source.id] = discovery.urls.length; failures.push(...discovery.failures.map((x) => ({ sourceId: source.id, ...x }))); crawlState.seed(source.id, [source.url, ...discovery.urls]); crawlState.requeueDue(source.id, cutoff, MAX_URLS_PER_RUN); }
     catch (error) { failures.push({ sourceId: source.id, url: source.url, error: error.message }); }
@@ -91,13 +126,18 @@ async function runLegalAgentOnce() {
   for (const source of sources) {
     const urls = crawlState.take(source.id, MAX_URLS_PER_RUN);
     for (const url of urls) {
+      if (downloadedBytes >= MAX_RUN_BYTES || candidates.length >= MAX_RECORDS_PER_RUN || !storageSafe()) { budgetStopped = true; break outer; }
       try {
         if (!sameOriginAllowed(source.url, url)) throw new Error("SOURCE_ORIGIN_REJECTED");
         const previous = crawlState.getVisited(source.id, url);
         const document = await fetchDocument(url, previous);
+        downloadedBytes += document.bytes || 0;
         if (document.kind === "not-modified") { crawlState.markNotModified(source.id, url, document); notModified++; continue; }
         if (document.kind === "html") crawlState.addDiscovered(source.id, extractPageLinks(url, document.text, MAX_DISCOVERY_LINKS));
-        candidates.push(...parseLegalPage({ source, url, html: document.text }));
+        const parsed = parseLegalPage({ source, url, html: document.text });
+        const room = MAX_RECORDS_PER_RUN - candidates.length;
+        candidates.push(...parsed.slice(0, room));
+        if (parsed.length > room) budgetStopped = true;
         const contentHash = crypto.createHash("sha256").update(document.text).digest("hex");
         crawlState.markVisited(source.id, url, { ...document, contentHash }); visited++;
       } catch (error) { crawlState.markFailed(source.id, url, error.message); failures.push({ sourceId: source.id, url, error: error.message }); }
@@ -109,9 +149,10 @@ async function runLegalAgentOnce() {
   const deduped = dedupeById(candidates); const changed = [], archived = []; let unchanged = 0;
   for (const record of deduped) { const previous = beforeById.get(record.id) || null; if (previous && previous.contentHash === record.contentHash) { unchanged++; continue; } const historical = archiveChangedRecord(previous, record); if (historical) archived.push(historical); changed.push(record); }
   let notificationsCreated = 0; for (const record of changed) notificationsCreated += emitLawUpdateNotifications(beforeById.get(record.id) || null, record);
-  if (changed.length || archived.length) localRag.replaceAll(mergeCanonical(before, changed, archived), { persist: true });
+  if ((changed.length || archived.length) && storageSafe()) localRag.replaceAll(mergeCanonical(before, changed, archived), { persist: true });
+  else if (changed.length || archived.length) throw new Error("LEGAL_AGENT_STORAGE_GUARD_TRIGGERED_BEFORE_COMMIT");
 
-  const result = { attemptedSources: sources.length, enabledJurisdictions: [...new Set(sources.map((s) => s.jurisdiction))], discoveredBySource, countryStats, visited, notModified, parsedRecords: candidates.length, acceptedRecords: deduped.length, updated: changed.length, unchanged, historicalVersions: archived.length, failed: failures.length, failures, notificationsCreated, corpusRecordCount: localRag.health().recordCount, crawl: Object.fromEntries(sources.map((s) => [s.id, crawlState.stats(s.id)])), degraded: failures.length > 0, completedAt: new Date().toISOString() };
+  const result = { attemptedSources: sources.length, enabledJurisdictions: [...new Set(sources.map((s) => s.jurisdiction))], discoveredBySource, countryStats, visited, notModified, downloadedBytes, budgetStopped, parsedRecords: candidates.length, acceptedRecords: deduped.length, updated: changed.length, unchanged, historicalVersions: archived.length, failed: failures.length, failures, notificationsCreated, corpusRecordCount: localRag.health().recordCount, crawl: Object.fromEntries(sources.map((s) => [s.id, crawlState.stats(s.id)])), degraded: failures.length > 0 || budgetStopped, completedAt: new Date().toISOString() };
   notifications.add({ type: "agent_run", status: result.degraded ? "degraded" : "success", ownerId: null, relatedItemId: null, legalEvidenceId: null, title: "گزارش عامل پایش و جمع‌آوری قوانین شاه‌اثر", message: `اجرای Agent: ${result.updated} رکورد تغییر/جدید، ${result.notModified} بدون تغییر و ${result.failed} خطا.`, metadata: result });
   return result;
 }
@@ -120,8 +161,16 @@ function startLegalAgent(options = {}) { const intervalMs = Number(options.inter
 
 function countryReadiness() {
   const out = {};
-  for (const [code, sources] of Object.entries(COUNTRY_LEGAL_SOURCES)) { const configured = sources.length > 0; const enabled = sources.some((s) => s.enabled); const crawls = sources.map((s) => ({ sourceId: s.id, ...crawlState.stats(s.id) })); const exhausted = crawls.reduce((n, x) => n + x.exhaustedFailures, 0); const queued = crawls.reduce((n, x) => n + x.queued, 0); out[code] = { configured, enabled, queued, exhaustedFailures: exhausted, sources: crawls, ready: false, reason: enabled ? "bootstrap_and_validation_required" : "not_enabled" }; }
+  for (const [code, sources] of Object.entries(COUNTRY_LEGAL_SOURCES)) {
+    if (!isSupportedJurisdiction(code)) continue;
+    const configured = sources.length > 0;
+    const enabled = sources.some((s) => s.enabled);
+    const crawls = sources.map((s) => ({ sourceId: s.id, ...crawlState.stats(s.id) }));
+    const exhausted = crawls.reduce((n, x) => n + x.exhaustedFailures, 0);
+    const queued = crawls.reduce((n, x) => n + x.queued, 0);
+    out[code] = { configured, enabled, queued, exhaustedFailures: exhausted, sources: crawls, ready: false, reason: enabled ? "bootstrap_and_validation_required" : "not_enabled" };
+  }
   return out;
 }
 
-module.exports = { DEFAULT_INTERVAL_MS, DEFAULT_RECHECK_MS, runLegalAgentOnce, startLegalAgent, notifications, watches, crawlState, countryReadiness, extractPdfText };
+module.exports = { DEFAULT_INTERVAL_MS, DEFAULT_RECHECK_MS, MAX_RUN_BYTES, MIN_FREE_DISK_BYTES, runLegalAgentOnce, startLegalAgent, notifications, watches, crawlState, countryReadiness, extractPdfText, freeDiskBytes };

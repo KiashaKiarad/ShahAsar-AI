@@ -7,6 +7,7 @@ const { startLegalAgent, runLegalAgentOnce, notifications, watches, crawlState, 
 require("dotenv").config();
 
 const app = express();
+const LEGAL_AGENT_CONTROL_TOKEN = process.env.LEGAL_AGENT_CONTROL_TOKEN || "";
 
 app.use(cors());
 app.use(express.json());
@@ -58,8 +59,11 @@ app.get("/legal/laws/new", (req, res) => {
   return res.json({ count: items.length, items });
 });
 
-// اجرای دستی یک چرخه ingestion فقط برای اپراتور/health-check؛ داده فقط در صورت تغییر نوشته می‌شود.
+// اجرای دستی یک چرخه ingestion فقط با توکن محرمانهٔ سرور؛ بدون توکن، مسیر اجرا غیرفعال است.
 app.post("/legal/agent/run-once", async (req, res) => {
+  if (!LEGAL_AGENT_CONTROL_TOKEN || req.get("x-legal-agent-token") !== LEGAL_AGENT_CONTROL_TOKEN) {
+    return res.status(404).json({ error: "Not Found" });
+  }
   try {
     const result = await runLegalAgentOnce();
     return res.json(result);

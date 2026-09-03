@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 const { createLegalRequest } = require("./src/legal/core");
+const { localRag } = require("./src/legal/local-rag");
 require("dotenv").config();
 
 const app = express();
@@ -9,7 +10,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// تست سرور
 app.get("/", (req, res) => {
   res.send("OK");
 });
@@ -18,12 +18,18 @@ app.get("/ping", (req, res) => {
   res.send("pong");
 });
 
+app.get("/legal/rag/health", (req, res) => {
+  return res.json({
+    ok: true,
+    rag: localRag.health(),
+    queryPath: "local-only"
+  });
+});
+
 // چت AI - مسیر موجود بدون تغییر رفتاری
 app.post("/chat", async (req, res) => {
   try {
     const message = req.body.message;
-
-    // 🔴 اینجا خیلی مهمه
     const apiKey = process.env.OPENROUTER_API_KEY;
 
     if (!apiKey) {
@@ -58,7 +64,6 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// مسیر افزایشی Legal AI؛ مسیر /chat و رفتار آن دست‌نخورده می‌ماند.
 app.post("/legal/chat", async (req, res) => {
   try {
     const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
@@ -122,6 +127,8 @@ app.post("/legal/chat", async (req, res) => {
         source: legalRequest.jurisdictionSource,
         needsJurisdictionClarification: legalRequest.needsJurisdictionClarification,
         evidenceCount: legalRequest.evidence.length,
+        knowledgeBase: legalRequest.knowledgeBase,
+        retrieval: legalRequest.retrieval
       },
     });
   } catch (err) {

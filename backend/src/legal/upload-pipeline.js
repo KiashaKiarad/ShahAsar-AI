@@ -7,14 +7,16 @@ const {
   requireVirusScanResult
 } = require("./document-intake");
 const { validateCleanDocument } = require("./document-parser-guard");
+const { extractDocumentText } = require("./document-extraction");
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
-function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_BYTES, virusScanner, documentValidator = validateCleanDocument } = {}) {
+function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_BYTES, virusScanner, documentValidator = validateCleanDocument, documentExtractor = extractDocumentText } = {}) {
   if (typeof quarantineDir !== "string" || !quarantineDir.trim()) throw new Error("QUARANTINE_DIR_REQUIRED");
   if (typeof cleanDir !== "string" || !cleanDir.trim()) throw new Error("CLEAN_DIR_REQUIRED");
   if (typeof virusScanner !== "function") throw new Error("VIRUS_SCANNER_REQUIRED");
   if (typeof documentValidator !== "function") throw new Error("DOCUMENT_VALIDATOR_REQUIRED");
+  if (typeof documentExtractor !== "function") throw new Error("DOCUMENT_EXTRACTOR_REQUIRED");
 
   const quarantineRoot = path.resolve(quarantineDir);
   const cleanRoot = path.resolve(cleanDir);
@@ -36,8 +38,14 @@ function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_
         const scan = await virusScanner({ path: quarantined.path, type: validation.type, sha256: quarantined.sha256 });
         requireVirusScanResult(scan);
 
-        const parserResult = documentValidator({ type: validation.type, buffer, maxDocumentBytes: maxBytes });
-        if (!parserResult || parserResult.type !== validation.type) throw new Error("DOCUMENT_VALIDATION_RESULT_INVALID");
+        const parser = documentValidator({ type: validation.type, buffer, maxDocumentBytes: maxBytes });
+        if (!parser || parser.type !== validation.type) throw new Error("DOCUMENT_VALIDATION_RESULT_INVALID");
+
+        const extraction = await documentExtractor({ type: validation.type, buffer, maxTextBytes: parser.maxExtractedTextBytes });
+        if (!extraction || extraction.type !== validation.type || typeof extraction.text !== "string" || !extraction.text.trim()) {
+          throw new Error("DOCUMENT_EXTRACTION_RESULT_INVALID");
+        }
+        if (extraction.sha256 && extraction.sha256 !== quarantined.sha256) throw new Error("DOCUMENT_HASH_MISMATCH");
 
         const cleanId = crypto.randomUUID();
         const extension = validation.type === "pdf" ? ".pdf" : validation.type === "docx" ? ".docx" : ".txt";
@@ -53,7 +61,8 @@ function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_
           type: validation.type,
           size: quarantined.size,
           sha256: quarantined.sha256,
-          parser: parserResult,
+          parser,
+          extraction: { text: extraction.text, sha256: extraction.sha256 || quarantined.sha256 },
           path: target,
           scanStatus: "clean",
           status: "accepted"

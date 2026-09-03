@@ -1,0 +1,57 @@
+name: Shah Asar Legal Backend Verification
+
+on:
+  push:
+    branches:
+      - legal-core-safe-integration
+  pull_request:
+    branches:
+      - legal-core-safe-integration
+
+jobs:
+  legal-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify PDF extractor dependency
+        run: pdftotext -v
+
+      - name: Run legal unit tests
+        run: npm test
+
+      - name: Start backend without external agent calls
+        env:
+          LEGAL_AGENT_ENABLED: "false"
+          PORT: "3000"
+        run: |
+          node server.js > /tmp/shahasar-backend.log 2>&1 &
+          echo $! > /tmp/shahasar-backend.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/legal/rag/health > /tmp/rag-health.json; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/rag-health.json
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/rag-health.json","utf8")); if(x.ok!==true || x.knowledgeBase!=="local-server") process.exit(1); console.log(JSON.stringify(x,null,2));'
+
+      - name: Stop backend
+        if: always()
+        run: |
+          if test -f /tmp/shahasar-backend.pid; then kill $(cat /tmp/shahasar-backend.pid) || true; fi
+          if test -f /tmp/shahasar-backend.log; then cat /tmp/shahasar-backend.log; fi

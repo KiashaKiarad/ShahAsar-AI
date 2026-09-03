@@ -24,6 +24,14 @@ const COUNTRY_LEGAL_SOURCES = Object.freeze({
   OM: [
     { id: "om-mjla", jurisdiction: "OM", tier: "justice_ministry_official", name: "وزارة العدل والشؤون القانونية", url: "https://mjla.gov.om/", supports: ["basic_law", "laws", "royal_decrees", "ministerial_decisions", "official_gazette", "annual_law_volumes"], enabled: false },
     { id: "om-omanportal", jurisdiction: "OM", tier: "government_legal_search", name: "البحث في التشريعات من وزارة الشؤون القانونية", url: "https://omanportal.gov.om/MolaLawSearch/", supports: ["legislation_search", "laws", "decrees"], enabled: false }
+  ],
+  TR: [
+    { id: "tr-resmi-gazete", jurisdiction: "TR", tier: "official_gazette", name: "T.C. Resmî Gazete", url: "https://resmigazete.gov.tr/", supports: ["laws", "regulations", "presidential_decisions", "official_gazette", "historical_issues"], enabled: false },
+    { id: "tr-mevzuat", jurisdiction: "TR", tier: "government_legislation", name: "Mevzuat Bilgi Sistemi", url: "https://www.mevzuat.gov.tr/", supports: ["legislation", "regulations", "consolidated_text", "amendments"], enabled: false }
+  ],
+  IT: [
+    { id: "it-normattiva", jurisdiction: "IT", tier: "government_legal_database", name: "Normattiva", url: "https://www.normattiva.it/", supports: ["national_laws", "codes", "multi-version_text", "historical_versions"], enabled: false },
+    { id: "it-gazzetta", jurisdiction: "IT", tier: "official_gazette", name: "Gazzetta Ufficiale", url: "https://www.gazzettaufficiale.it/", supports: ["official_gazette", "laws", "decrees", "official_publications"], enabled: false }
   ]
 });
 

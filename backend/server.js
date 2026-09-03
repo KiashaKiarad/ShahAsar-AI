@@ -4,6 +4,8 @@ const axios = require("axios");
 const { createLegalRequest } = require("./src/legal/core");
 const { localRag } = require("./src/legal/local-rag");
 const { startLegalAgent, runLegalAgentOnce, notifications, watches, crawlState, DEFAULT_RECHECK_MS } = require("./src/legal/legal-agent");
+const { getCountryLegalSources, listEnabledCountrySources } = require("./src/legal/country-sources");
+const { countryReadiness } = require("./src/legal/country-readiness");
 require("dotenv").config();
 
 const app = express();
@@ -17,6 +19,19 @@ app.get("/ping", (req, res) => res.send("pong"));
 
 // سلامت RAG کاملاً محلی؛ این مسیر به منابع حقوقی خارجی وابسته نیست.
 app.get("/legal/rag/health", (req, res) => res.json(localRag.health()));
+
+// کشور فقط پس از bootstrap کامل و validation پوشش، active دیده می‌شود.
+app.get("/legal/countries", (req, res) => {
+  const countries = countryReadiness.list().map((item) => ({
+    ...item,
+    sources: getCountryLegalSources(item.jurisdiction)
+  }));
+  return res.json({
+    active: countryReadiness.active(),
+    countries,
+    enabledSources: listEnabledCountrySources()
+  });
+});
 
 // وضعیت واقعی corpus + صف agent برای کنترل و ممیزی عملیاتی.
 app.get("/legal/agent/status", (req, res) => {
@@ -39,6 +54,7 @@ app.get("/legal/agent/status", (req, res) => {
       conditionalRequests: true,
       rule: "fetch for validation, write to RAG only when content changes"
     },
+    readiness: countryReadiness.active(),
     sources,
     recentRuns
   });
@@ -95,6 +111,9 @@ app.post("/legal/chat", async (req, res) => {
     const requestedJurisdiction = req.body?.jurisdiction;
     if (!message) return res.status(400).json({ error: "پیام الزامی است" });
     if (message.length > 12000) return res.status(413).json({ error: "طول پیام بیش از حد مجاز است" });
+    if (requestedJurisdiction && !countryReadiness.isActive(requestedJurisdiction)) {
+      return res.status(409).json({ error: "این حوزه قضایی هنوز از نظر corpus و validation برای استفاده فعال نشده است" });
+    }
 
     const legalRequest = createLegalRequest({ message, jurisdiction: requestedJurisdiction });
     const apiKey = process.env.OPENROUTER_API_KEY;

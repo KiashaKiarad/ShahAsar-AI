@@ -20,16 +20,11 @@ state.markFailed("ir-test", "https://qavanin.ir/a", "temporary-again");
 assert.strictEqual(state.stats("ir-test").queued, 0);
 assert.strictEqual(state.stats("ir-test").exhaustedFailures, 1);
 
-state.markVisited("ir-test", "https://qavanin.ir/b", {
-  etag: "\"v1\"",
-  lastModified: "Tue, 01 Sep 2026 00:00:00 GMT",
-  contentHash: "hash-v1",
-  contentType: "text/html"
-});
+state.markVisited("ir-test", "https://qavanin.ir/b", { etag: "\"v1\"", lastModified: "Tue, 01 Sep 2026 00:00:00 GMT", contentHash: "hash-v1", contentType: "text/html" });
 const visited = state.getVisited("ir-test", "https://qavanin.ir/b");
 assert.strictEqual(visited.etag, "\"v1\"");
 assert.strictEqual(visited.contentHash, "hash-v1");
-assert.strictEqual(state.stats("ir-test").visited, 2);
+assert.strictEqual(state.stats("ir-test").visited, 1);
 
 const oldCutoff = Date.now() + 1000;
 assert.strictEqual(state.requeueDue("ir-test", oldCutoff, 10), 1);

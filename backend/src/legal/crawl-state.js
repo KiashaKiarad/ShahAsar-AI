@@ -8,14 +8,14 @@ const DEFAULT_MAX_RETRIES = Number(process.env.LEGAL_AGENT_MAX_RETRIES || 5);
 
 function readState(filePath = DEFAULT_PATH) {
   try {
-    if (!fs.existsSync(filePath)) return { version: 2, sources: {} };
+    if (!fs.existsSync(filePath)) return { version: 3, sources: {} };
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (!parsed || typeof parsed !== "object" || typeof parsed.sources !== "object") {
-      return { version: 2, sources: {} };
+      return { version: 3, sources: {} };
     }
     return parsed;
   } catch {
-    return { version: 2, sources: {} };
+    return { version: 3, sources: {} };
   }
 }
 
@@ -47,7 +47,10 @@ function createCrawlState(options = {}) {
   function seed(sourceId, urls = []) {
     const source = ensureSource(sourceId);
     for (const url of Array.isArray(urls) ? urls : []) {
-      if (!url || source.visited[url] || source.queued[url]) continue;
+      if (!url || source.queued[url]) continue;
+      const visited = source.visited[url];
+      if (visited && typeof visited === "object") continue;
+      if (visited) continue;
       source.queue.push(url);
       source.queued[url] = true;
     }
@@ -68,7 +71,7 @@ function createCrawlState(options = {}) {
     const source = ensureSource(sourceId);
     let added = 0;
     for (const url of Array.isArray(urls) ? urls : []) {
-      if (!url || source.visited[url] || source.queued[url]) continue;
+      if (!url || source.queued[url] || source.visited[url]) continue;
       source.queue.push(url);
       source.queued[url] = true;
       added += 1;
@@ -77,12 +80,57 @@ function createCrawlState(options = {}) {
     return added;
   }
 
-  function markVisited(sourceId, url) {
+  function requeueDue(sourceId, cutoffMs, limit = 100) {
+    const source = ensureSource(sourceId);
+    const max = Math.max(1, Math.min(1000, Number(limit) || 100));
+    const cutoff = Number(cutoffMs) || 0;
+    let added = 0;
+
+    for (const [url, value] of Object.entries(source.visited)) {
+      if (added >= max || source.queued[url]) continue;
+      const timestamp = typeof value === "object" ? Date.parse(value.fetchedAt || value.at || "") : Date.parse(value || "");
+      if (!timestamp || timestamp > cutoff) continue;
+      source.queue.push(url);
+      source.queued[url] = true;
+      added += 1;
+    }
+
+    if (added) writeState(state, filePath);
+    return added;
+  }
+
+  function markVisited(sourceId, url, metadata = {}) {
     const source = ensureSource(sourceId);
     if (!url) return;
-    source.visited[url] = new Date().toISOString();
+    source.visited[url] = {
+      fetchedAt: new Date().toISOString(),
+      etag: metadata.etag || null,
+      lastModified: metadata.lastModified || null,
+      contentHash: metadata.contentHash || null,
+      contentType: metadata.contentType || null,
+      status: metadata.status || 200
+    };
     delete source.failed[url];
     writeState(state, filePath);
+  }
+
+  function getVisited(sourceId, url) {
+    const source = ensureSource(sourceId);
+    const value = source.visited[url];
+    if (!value) return null;
+    if (typeof value === "string") {
+      return { fetchedAt: value, etag: null, lastModified: null, contentHash: null, contentType: null, status: 200 };
+    }
+    return { ...value };
+  }
+
+  function markNotModified(sourceId, url, metadata = {}) {
+    const previous = getVisited(sourceId, url) || {};
+    markVisited(sourceId, url, {
+      ...previous,
+      ...metadata,
+      status: 304
+    });
   }
 
   function markFailed(sourceId, url, error) {
@@ -120,7 +168,18 @@ function createCrawlState(options = {}) {
     };
   }
 
-  return { seed, take, addDiscovered, markVisited, markFailed, markRun, stats };
+  return {
+    seed,
+    take,
+    addDiscovered,
+    requeueDue,
+    getVisited,
+    markVisited,
+    markNotModified,
+    markFailed,
+    markRun,
+    stats
+  };
 }
 
 module.exports = { DEFAULT_PATH, DEFAULT_MAX_RETRIES, readState, writeState, createCrawlState };

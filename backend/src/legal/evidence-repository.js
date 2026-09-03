@@ -1,41 +1,38 @@
 const { normalizeEvidence, filterEvidence } = require("./evidence");
 
 function createEvidenceRepository(initialEvidence = []) {
-  let records = [];
+  const records = new Map();
 
   addMany(initialEvidence);
 
   function add(record) {
     const normalized = normalizeEvidence(record);
-    records.push(normalized);
+    records.set(normalized.id, normalized);
     return normalized;
   }
 
   function addMany(items) {
     for (const item of Array.isArray(items) ? items : []) add(item);
-    return records.length;
+    return records.size;
   }
 
   function list(filters = {}) {
-    return filterEvidence(records, filters);
+    return filterEvidence([...records.values()], filters);
   }
 
   function all() {
-    return records.map((record) => ({ ...record }));
+    return [...records.values()].map((record) => ({ ...record }));
   }
 
   function clear() {
-    records = [];
+    records.clear();
   }
 
-  return {
-    add,
-    addMany,
-    list,
-    all,
-    clear,
-    size: () => records.length
-  };
+  function size() {
+    return records.size;
+  }
+
+  return { add, addMany, list, all, clear, size };
 }
 
 module.exports = { createEvidenceRepository };

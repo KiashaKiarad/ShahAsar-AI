@@ -1,12 +1,14 @@
 {
-  "version": 1,
+  "version": 2,
   "countries": {
-    "IR": {"status": "bootstrapping", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 5, "lastSyncAt": null, "lastError": null},
-    "DE": {"status": "planned", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 0, "lastSyncAt": null, "lastError": null},
-    "US": {"status": "planned", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 0, "lastSyncAt": null, "lastError": null},
-    "AE": {"status": "bootstrapping", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 0, "lastSyncAt": null, "lastError": null},
-    "SA": {"status": "bootstrapping", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 0, "lastSyncAt": null, "lastError": null},
-    "KW": {"status": "bootstrapping", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 0, "lastSyncAt": null, "lastError": null},
-    "OM": {"status": "bootstrapping", "bootstrapComplete": false, "coverageVerified": false, "validatedAt": null, "recordCount": 0, "lastSyncAt": null, "lastError": null}
+    "IR": {"status":"bootstrapping","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":5,"lastSyncAt":null,"lastError":null},
+    "DE": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "US": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "AE": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "SA": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "KW": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "OM": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "TR": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null},
+    "IT": {"status":"planned","bootstrapComplete":false,"coverageVerified":false,"validatedAt":null,"recordCount":0,"lastSyncAt":null,"lastError":null}
   }
 }

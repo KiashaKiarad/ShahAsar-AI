@@ -25,6 +25,12 @@ function validateRecords(records) {
   return normalized;
 }
 
+function dedupeById(records) {
+  const map = new Map();
+  for (const record of Array.isArray(records) ? records : []) map.set(record.id, record);
+  return [...map.values()];
+}
+
 function parseSnapshotFile(snapshotPath) {
   const parsed = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
   if (!Array.isArray(parsed.records)) throw new Error("RAG_SNAPSHOT_RECORDS_INVALID");
@@ -50,7 +56,7 @@ function readSnapshot(snapshotPath = DEFAULT_SNAPSHOT_PATH, backupPath = DEFAULT
 function writeSnapshot(records, snapshotPath = DEFAULT_SNAPSHOT_PATH, backupPath = DEFAULT_BACKUP_PATH) {
   const directory = path.dirname(snapshotPath);
   fs.mkdirSync(directory, { recursive: true });
-  const normalizedRecords = validateRecords(records);
+  const normalizedRecords = validateRecords(dedupeById(records));
   const payload = JSON.stringify({
     version: 2,
     generatedAt: new Date().toISOString(),
@@ -81,7 +87,7 @@ function createLocalRag(options = {}) {
   const backupPath = options.backupPath || DEFAULT_BACKUP_PATH;
   const snapshot = readSnapshot(snapshotPath, backupPath);
   const initialRecords = snapshot?.records?.length ? snapshot.records : IRAN_LEGAL_SEED;
-  const repository = createEvidenceRepository(initialRecords);
+  const repository = createEvidenceRepository(dedupeById(initialRecords));
 
   function buildIndex() {
     const chunks = chunkEvidenceCollection(repository.all(), options.chunking);
@@ -104,7 +110,7 @@ function createLocalRag(options = {}) {
   }
 
   function replaceAll(records, { persist = true } = {}) {
-    const normalized = validateRecords(records);
+    const normalized = dedupeById(validateRecords(records));
     repository.clear();
     repository.addMany(normalized);
     rebuildIndex();
@@ -114,10 +120,12 @@ function createLocalRag(options = {}) {
 
   function addMany(records, { persist = true } = {}) {
     if (!Array.isArray(records) || !records.length) return repository.size();
-    const normalized = validateRecords(records);
-    repository.addMany(normalized);
+    const normalizedIncoming = dedupeById(validateRecords(records));
+    const merged = dedupeById([...repository.all(), ...normalizedIncoming]);
+    repository.clear();
+    repository.addMany(merged);
     rebuildIndex();
-    if (persist) writeSnapshot(repository.all(), snapshotPath, backupPath);
+    if (persist) writeSnapshot(merged, snapshotPath, backupPath);
     return repository.size();
   }
 

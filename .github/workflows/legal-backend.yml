@@ -48,10 +48,28 @@ jobs:
             sleep 1
           done
           test -s /tmp/rag-health.json
-          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/rag-health.json","utf8")); if(x.ok!==true || x.knowledgeBase!=="local-server") process.exit(1); console.log(JSON.stringify(x,null,2));'
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/rag-health.json","utf8")); if(x.mode!=="local" || !Number.isInteger(x.recordCount) || x.recordCount < 1 || x.index?.type!=="bm25-local") process.exit(1); console.log(JSON.stringify(x,null,2));'
+
+      - name: Verify fail-closed country gate
+        env:
+          LEGAL_AGENT_ENABLED: "false"
+          PORT: "3001"
+        run: |
+          node server.js > /tmp/shahasar-country.log 2>&1 &
+          echo $! > /tmp/shahasar-country.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3001/legal/countries > /tmp/countries.json; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/countries.json
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/countries.json","utf8")); const ir=x.countries.find(c=>c.jurisdiction==="IR"); if(!ir || ir.status==="ready" || x.active.length!==0) process.exit(1); console.log(JSON.stringify(x,null,2));'
 
       - name: Stop backend
         if: always()
         run: |
           if test -f /tmp/shahasar-backend.pid; then kill $(cat /tmp/shahasar-backend.pid) || true; fi
+          if test -f /tmp/shahasar-country.pid; then kill $(cat /tmp/shahasar-country.pid) || true; fi
           if test -f /tmp/shahasar-backend.log; then cat /tmp/shahasar-backend.log; fi
+          if test -f /tmp/shahasar-country.log; then cat /tmp/shahasar-country.log; fi

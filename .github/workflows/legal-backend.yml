@@ -87,3 +87,5 @@ jobs:
         run: |
           for f in /tmp/shahasar-backend.pid /tmp/shahasar-country.pid /tmp/shahasar-gate.pid; do if test -f "$f"; then kill $(cat "$f") || true; fi; done
           for f in /tmp/shahasar-backend.log /tmp/shahasar-country.log /tmp/shahasar-gate.log; do if test -f "$f"; then cat "$f"; fi; done
+
+      # Keep this verification workflow scoped to the safe development branch.

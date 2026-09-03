@@ -16,7 +16,7 @@ const ALLOWED_TYPES = Object.freeze({
     mimeTypes: new Set([
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ]),
-    signatures: [Buffer.from("PK\\x03\\x04", "binary")]
+    signatures: [Buffer.from([0x50, 0x4b, 0x03, 0x04])]
   }),
   txt: Object.freeze({
     extension: ".txt",
@@ -30,18 +30,25 @@ function normalizeFilename(filename) {
   return filename.normalize("NFKC").replace(/[\\/\u0000-\u001f\u007f]/g, "").trim();
 }
 
+function isValidUtf8Text(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.includes(0x00)) return false;
+  const decoded = buffer.toString("utf8");
+  return !decoded.includes("\ufffd");
+}
+
 function detectType(buffer) {
   if (!Buffer.isBuffer(buffer)) return null;
   if (buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) return "pdf";
   if (buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return "docx";
-  return "txt";
+  if (isValidUtf8Text(buffer)) return "txt";
+  return null;
 }
 
 function hasExpectedSignature(buffer, type) {
   if (!Buffer.isBuffer(buffer)) return false;
   const definition = ALLOWED_TYPES[type];
   if (!definition) return false;
-  if (type === "txt") return true;
+  if (type === "txt") return isValidUtf8Text(buffer);
   return definition.signatures.some((signature) => buffer.subarray(0, signature.length).equals(signature));
 }
 
@@ -118,6 +125,7 @@ module.exports = {
   DEFAULT_MAX_BYTES,
   normalizeFilename,
   detectType,
+  isValidUtf8Text,
   validateUploadMetadata,
   createQuarantineId,
   quarantineBuffer,

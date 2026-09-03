@@ -11,56 +11,50 @@ const {
 } = require("./document-intake");
 
 test("accepts a real PDF signature only when extension and MIME agree", () => {
-  const result = validateUploadMetadata({
-    filename: "contract.pdf",
-    mimeType: "application/pdf",
-    size: 5,
-    buffer: Buffer.from("%PDF-")
-  });
+  const result = validateUploadMetadata({ filename: "contract.pdf", mimeType: "application/pdf", size: 5, buffer: Buffer.from("%PDF-") });
   assert.equal(result.valid, true);
   assert.equal(result.type, "pdf");
 });
 
-test("rejects spoofed MIME or extension", () => {
+test("accepts a real DOCX container signature only when extension and MIME agree", () => {
   const result = validateUploadMetadata({
-    filename: "contract.exe",
-    mimeType: "application/pdf",
-    size: 5,
-    buffer: Buffer.from("%PDF-")
+    filename: "contract.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    size: 4,
+    buffer: Buffer.from([0x50, 0x4b, 0x03, 0x04])
   });
+  assert.equal(result.valid, true);
+  assert.equal(result.type, "docx");
+});
+
+test("accepts genuine UTF-8/plain text and rejects binary masquerading as text", () => {
+  const valid = validateUploadMetadata({ filename: "contract.txt", mimeType: "text/plain", size: 16, buffer: Buffer.from("قرارداد معتبر", "utf8") });
+  assert.equal(valid.valid, true);
+  const binary = validateUploadMetadata({ filename: "contract.txt", mimeType: "text/plain", size: 4, buffer: Buffer.from([0x00, 0xff, 0x01, 0x02]) });
+  assert.equal(binary.valid, false);
+  assert.ok(binary.errors.some((item) => item.code === "signature_mismatch"));
+});
+
+test("rejects spoofed MIME or extension", () => {
+  const result = validateUploadMetadata({ filename: "contract.exe", mimeType: "application/pdf", size: 5, buffer: Buffer.from("%PDF-") });
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((item) => item.code === "extension_not_allowed"));
 });
 
 test("rejects a PDF renamed as DOCX", () => {
-  const result = validateUploadMetadata({
-    filename: "contract.docx",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    size: 5,
-    buffer: Buffer.from("%PDF-")
-  });
+  const result = validateUploadMetadata({ filename: "contract.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 5, buffer: Buffer.from("%PDF-") });
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((item) => item.code === "signature_mismatch"));
 });
 
 test("rejects oversized uploads before processing", () => {
-  const result = validateUploadMetadata({
-    filename: "contract.pdf",
-    mimeType: "application/pdf",
-    size: 26 * 1024 * 1024,
-    buffer: Buffer.from("%PDF-")
-  });
+  const result = validateUploadMetadata({ filename: "contract.pdf", mimeType: "application/pdf", size: 26 * 1024 * 1024, buffer: Buffer.from("%PDF-") });
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((item) => item.code === "file_too_large"));
 });
 
-test("does not accept a path traversal filename", () => {
-  const result = validateUploadMetadata({
-    filename: "../../contract.pdf",
-    mimeType: "application/pdf",
-    size: 5,
-    buffer: Buffer.from("%PDF-")
-  });
+test("normalizes traversal components without using them for storage", () => {
+  const result = validateUploadMetadata({ filename: "../../contract.pdf", mimeType: "application/pdf", size: 5, buffer: Buffer.from("%PDF-") });
   assert.equal(result.safeFilename, "contract.pdf");
   assert.equal(result.valid, true);
 });

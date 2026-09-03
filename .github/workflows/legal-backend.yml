@@ -25,6 +25,12 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
+      - name: Install PDF extractor dependency
+        working-directory: .
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y poppler-utils
+
       - name: Install dependencies
         run: npm ci
 
@@ -42,15 +48,13 @@ jobs:
           node server.js > /tmp/shahasar-backend.log 2>&1 &
           echo $! > /tmp/shahasar-backend.pid
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:3000/legal/rag/health > /tmp/rag-health.json; then
-              break
-            fi
+            if curl -fsS http://127.0.0.1:3000/legal/rag/health > /tmp/rag-health.json; then break; fi
             sleep 1
           done
           test -s /tmp/rag-health.json
           node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/rag-health.json","utf8")); if(x.mode!=="local" || !Number.isInteger(x.recordCount) || x.recordCount < 1 || x.index?.type!=="bm25-local") process.exit(1); console.log(JSON.stringify(x,null,2));'
 
-      - name: Verify fail-closed country gate
+      - name: Verify language and country routing
         env:
           LEGAL_AGENT_ENABLED: "false"
           PORT: "3001"
@@ -58,18 +62,28 @@ jobs:
           node server.js > /tmp/shahasar-country.log 2>&1 &
           echo $! > /tmp/shahasar-country.pid
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:3001/legal/countries > /tmp/countries.json; then
-              break
-            fi
+            if curl -fsS http://127.0.0.1:3001/legal/languages > /tmp/languages.json; then break; fi
+            sleep 1
+          done
+          test -s /tmp/languages.json
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/languages.json","utf8")); if(x.jurisdictionLanguages.IR!=="fa" || x.jurisdictionLanguages.DE!=="de" || x.jurisdictionLanguages.TR!=="tr") process.exit(1); console.log(JSON.stringify(x,null,2));'
+
+      - name: Verify fail-closed country gate
+        env:
+          LEGAL_AGENT_ENABLED: "false"
+          PORT: "3002"
+        run: |
+          node server.js > /tmp/shahasar-gate.log 2>&1 &
+          echo $! > /tmp/shahasar-gate.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3002/legal/countries > /tmp/countries.json; then break; fi
             sleep 1
           done
           test -s /tmp/countries.json
-          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/countries.json","utf8")); const ir=x.countries.find(c=>c.jurisdiction==="IR"); if(!ir || ir.status==="ready" || x.active.length!==0) process.exit(1); console.log(JSON.stringify(x,null,2));'
+          node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync("/tmp/countries.json","utf8")); const expected=["IR","DE","US","AE","SA","KW","OM","TR","IT"]; const got=x.countries.map(c=>c.jurisdiction); if(JSON.stringify(got)!==JSON.stringify(expected) || x.active.length!==0) process.exit(1); console.log(JSON.stringify(x,null,2));'
 
       - name: Stop backend
         if: always()
         run: |
-          if test -f /tmp/shahasar-backend.pid; then kill $(cat /tmp/shahasar-backend.pid) || true; fi
-          if test -f /tmp/shahasar-country.pid; then kill $(cat /tmp/shahasar-country.pid) || true; fi
-          if test -f /tmp/shahasar-backend.log; then cat /tmp/shahasar-backend.log; fi
-          if test -f /tmp/shahasar-country.log; then cat /tmp/shahasar-country.log; fi
+          for f in /tmp/shahasar-backend.pid /tmp/shahasar-country.pid /tmp/shahasar-gate.pid; do if test -f "$f"; then kill $(cat "$f") || true; fi; done
+          for f in /tmp/shahasar-backend.log /tmp/shahasar-country.log /tmp/shahasar-gate.log; do if test -f "$f"; then cat "$f"; fi; done

@@ -20,6 +20,10 @@ function createEvidenceRepository(initialEvidence = []) {
     return filterEvidence(records, filters);
   }
 
+  function all() {
+    return records.map((record) => ({ ...record }));
+  }
+
   function clear() {
     records = [];
   }
@@ -28,6 +32,7 @@ function createEvidenceRepository(initialEvidence = []) {
     add,
     addMany,
     list,
+    all,
     clear,
     size: () => records.length
   };

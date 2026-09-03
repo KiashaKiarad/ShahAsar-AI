@@ -74,6 +74,7 @@ async function discoverSourcePages(source) {
   const queue = [{ url: source.url, depth: 0 }];
   const visited = new Set();
   const pages = [];
+  const failures = [];
 
   while (queue.length && pages.length < MAX_PAGES_PER_RUN) {
     const current = queue.shift();
@@ -87,12 +88,12 @@ async function discoverSourcePages(source) {
       for (const child of extractLegalLinks(current.url, page.html)) {
         if (!visited.has(child)) queue.push({ url: child, depth: current.depth + 1 });
       }
-    } catch {
-      // A failed source/page never removes or invalidates the existing local corpus.
+    } catch (error) {
+      failures.push({ url: current.url, error: error.message });
     }
   }
 
-  return pages;
+  return { pages, failures };
 }
 
 function findRelatedWatches(evidence) {
@@ -149,15 +150,14 @@ async function runLegalAgentOnce() {
   const beforeById = new Map(before.map((record) => [record.id, record]));
   const candidates = [];
   const failures = [];
+  let discoveredPages = 0;
 
   for (const source of IRAN_LEGAL_SOURCES.filter((item) => item.enabled)) {
-    const pages = await discoverSourcePages(source);
-    if (!pages.length) {
-      failures.push({ sourceId: source.id, url: source.url, error: "SOURCE_DISCOVERY_EMPTY" });
-      continue;
-    }
+    const discovery = await discoverSourcePages(source);
+    discoveredPages += discovery.pages.length;
+    failures.push(...discovery.failures.map((item) => ({ sourceId: source.id, ...item })));
 
-    for (const page of pages) {
+    for (const page of discovery.pages) {
       try {
         candidates.push(...parseLegalPage({ source, url: page.url, html: page.html }));
       } catch (error) {
@@ -167,22 +167,21 @@ async function runLegalAgentOnce() {
   }
 
   const deduped = [...new Map(candidates.map((record) => [record.id, record])).values()];
-  const existingById = new Map(before.map((record) => [record.id, record]));
   const changed = deduped.filter((record) => {
-    const previous = existingById.get(record.id);
+    const previous = beforeById.get(record.id);
     return !previous || previous.contentHash !== record.contentHash;
   });
 
   let notificationsCreated = 0;
   for (const record of changed) {
-    notificationsCreated += emitLawUpdateNotifications(existingById.get(record.id) || null, record);
+    notificationsCreated += emitLawUpdateNotifications(beforeById.get(record.id) || null, record);
   }
 
   if (deduped.length) localRag.addMany(deduped, { persist: true });
 
   const result = {
     attemptedSources: IRAN_LEGAL_SOURCES.filter((item) => item.enabled).length,
-    discoveredPages: pagesCount(candidates),
+    discoveredPages,
     acceptedRecords: deduped.length,
     updated: changed.length,
     failed: failures.length,
@@ -205,10 +204,6 @@ async function runLegalAgentOnce() {
   });
 
   return result;
-}
-
-function pagesCount(candidates) {
-  return Array.isArray(candidates) ? candidates.length : 0;
 }
 
 function startLegalAgent(options = {}) {

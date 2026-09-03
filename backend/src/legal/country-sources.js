@@ -1,3 +1,7 @@
+"use strict";
+
+const { SUPPORTED_JURISDICTIONS, isSupportedJurisdiction } = require("./country-policy");
+
 const COUNTRY_LEGAL_SOURCES = Object.freeze({
   IR: [
     { id: "ir-qavanin", jurisdiction: "IR", tier: "primary_registry", name: "پایگاه ملی قوانین و مقررات جمهوری اسلامی ایران", url: "https://qavanin.ir/", supports: ["laws", "regulations", "amendments"], enabled: true },
@@ -35,12 +39,25 @@ const COUNTRY_LEGAL_SOURCES = Object.freeze({
   ]
 });
 
+for (const code of Object.keys(COUNTRY_LEGAL_SOURCES)) {
+  if (!isSupportedJurisdiction(code)) throw new Error(`COUNTRY_SOURCE_NOT_SUPPORTED:${code}`);
+  Object.freeze(COUNTRY_LEGAL_SOURCES[code]);
+  for (const source of COUNTRY_LEGAL_SOURCES[code]) {
+    Object.freeze(source.supports);
+    Object.freeze(source);
+  }
+}
+
 function getCountryLegalSources(jurisdiction) {
-  return (COUNTRY_LEGAL_SOURCES[String(jurisdiction || "").toUpperCase()] || []).map((source) => ({ ...source, supports: [...source.supports] }));
+  if (!isSupportedJurisdiction(jurisdiction)) return [];
+  const code = String(jurisdiction).trim().toUpperCase();
+  return COUNTRY_LEGAL_SOURCES[code].map((source) => ({ ...source, supports: [...source.supports] }));
 }
 
 function listEnabledCountrySources() {
-  return Object.values(COUNTRY_LEGAL_SOURCES).flat().filter((source) => source.enabled).map((source) => ({ ...source, supports: [...source.supports] }));
+  return SUPPORTED_JURISDICTIONS.flatMap((code) => COUNTRY_LEGAL_SOURCES[code] || [])
+    .filter((source) => source.enabled)
+    .map((source) => ({ ...source, supports: [...source.supports] }));
 }
 
 module.exports = { COUNTRY_LEGAL_SOURCES, getCountryLegalSources, listEnabledCountrySources };

@@ -30,17 +30,22 @@ function normalizeFilename(filename) {
   return filename.normalize("NFKC").replace(/[\\/\u0000-\u001f\u007f]/g, "").trim();
 }
 
-function isValidUtf8Text(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.includes(0x00)) return false;
-  const decoded = buffer.toString("utf8");
-  return !decoded.includes("\ufffd");
+function isLikelyText(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+  if (sample.includes(0)) return false;
+  let controlCount = 0;
+  for (const byte of sample) {
+    if (byte < 0x09 || (byte > 0x0d && byte < 0x20)) controlCount += 1;
+  }
+  return controlCount / sample.length < 0.01;
 }
 
 function detectType(buffer) {
   if (!Buffer.isBuffer(buffer)) return null;
   if (buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) return "pdf";
   if (buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) return "docx";
-  if (isValidUtf8Text(buffer)) return "txt";
+  if (isLikelyText(buffer)) return "txt";
   return null;
 }
 
@@ -48,8 +53,10 @@ function hasExpectedSignature(buffer, type) {
   if (!Buffer.isBuffer(buffer)) return false;
   const definition = ALLOWED_TYPES[type];
   if (!definition) return false;
-  if (type === "txt") return isValidUtf8Text(buffer);
-  return definition.signatures.some((signature) => buffer.subarray(0, signature.length).equals(signature));
+  if (type === "txt") return isLikelyText(buffer);
+  return definition.signatures.some((signature) =>
+    buffer.subarray(0, signature.length).equals(signature)
+  );
 }
 
 function validateUploadMetadata({ filename, mimeType, size, buffer, maxBytes = DEFAULT_MAX_BYTES } = {}) {
@@ -57,18 +64,28 @@ function validateUploadMetadata({ filename, mimeType, size, buffer, maxBytes = D
   const safeFilename = normalizeFilename(filename);
   const lower = safeFilename.toLowerCase();
   const detectedType = detectType(buffer);
-  const declaredMime = typeof mimeType === "string" ? mimeType.split(";", 1)[0].trim().toLowerCase() : "";
+  const declaredMime = typeof mimeType === "string"
+    ? mimeType.split(";", 1)[0].trim().toLowerCase()
+    : "";
 
   if (!safeFilename || safeFilename.length > 180) errors.push({ code: "invalid_filename" });
   if (!Number.isInteger(size) || size < DEFAULT_MIN_BYTES) errors.push({ code: "invalid_size" });
   if (Number.isInteger(size) && size > maxBytes) errors.push({ code: "file_too_large", maxBytes });
 
   const extension = path.extname(lower);
-  const matchingType = Object.entries(ALLOWED_TYPES).find(([, item]) => item.extension === extension)?.[0] || null;
+  const matchingType = Object.entries(ALLOWED_TYPES)
+    .find(([, item]) => item.extension === extension)?.[0] || null;
+
   if (!matchingType) errors.push({ code: "extension_not_allowed" });
-  if (matchingType && !ALLOWED_TYPES[matchingType].mimeTypes.has(declaredMime)) errors.push({ code: "mime_not_allowed" });
-  if (matchingType && detectedType !== matchingType) errors.push({ code: "signature_mismatch" });
-  if (matchingType && !hasExpectedSignature(buffer, matchingType)) errors.push({ code: "content_signature_invalid" });
+  if (matchingType && !ALLOWED_TYPES[matchingType].mimeTypes.has(declaredMime)) {
+    errors.push({ code: "mime_not_allowed" });
+  }
+  if (matchingType && detectedType !== matchingType) {
+    errors.push({ code: "signature_mismatch" });
+  }
+  if (matchingType && !hasExpectedSignature(buffer, matchingType)) {
+    errors.push({ code: "content_signature_invalid" });
+  }
 
   return {
     valid: errors.length === 0,
@@ -124,8 +141,9 @@ module.exports = {
   ALLOWED_TYPES,
   DEFAULT_MAX_BYTES,
   normalizeFilename,
+  isLikelyText,
   detectType,
-  isValidUtf8Text,
+  hasExpectedSignature,
   validateUploadMetadata,
   createQuarantineId,
   quarantineBuffer,

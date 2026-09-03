@@ -4,19 +4,18 @@ const path = require("path");
 const DEFAULT_PATH = path.resolve(
   process.env.LEGAL_RAG_CRAWL_STATE || path.join(__dirname, "../../data/legal-crawl-state.json")
 );
+const DEFAULT_MAX_RETRIES = Number(process.env.LEGAL_AGENT_MAX_RETRIES || 5);
 
 function readState(filePath = DEFAULT_PATH) {
   try {
-    if (!fs.existsSync(filePath)) {
-      return { version: 1, sources: {} };
-    }
+    if (!fs.existsSync(filePath)) return { version: 2, sources: {} };
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (!parsed || typeof parsed !== "object" || typeof parsed.sources !== "object") {
-      return { version: 1, sources: {} };
+      return { version: 2, sources: {} };
     }
     return parsed;
   } catch {
-    return { version: 1, sources: {} };
+    return { version: 2, sources: {} };
   }
 }
 
@@ -29,6 +28,7 @@ function writeState(state, filePath = DEFAULT_PATH) {
 
 function createCrawlState(options = {}) {
   const filePath = options.filePath || DEFAULT_PATH;
+  const maxRetries = Math.max(1, Number(options.maxRetries || DEFAULT_MAX_RETRIES));
   const state = readState(filePath);
 
   function ensureSource(sourceId) {
@@ -88,10 +88,19 @@ function createCrawlState(options = {}) {
   function markFailed(sourceId, url, error) {
     const source = ensureSource(sourceId);
     if (!url) return;
+    const previous = source.failed[url] || { attempts: 0 };
+    const attempts = Number(previous.attempts || 0) + 1;
     source.failed[url] = {
       at: new Date().toISOString(),
-      error: String(error || "unknown")
+      error: String(error || "unknown"),
+      attempts,
+      exhausted: attempts >= maxRetries
     };
+
+    if (attempts < maxRetries && !source.visited[url] && !source.queued[url]) {
+      source.queue.push(url);
+      source.queued[url] = true;
+    }
     writeState(state, filePath);
   }
 
@@ -106,6 +115,7 @@ function createCrawlState(options = {}) {
       queued: source.queue.length,
       visited: Object.keys(source.visited).length,
       failed: Object.keys(source.failed).length,
+      exhaustedFailures: Object.values(source.failed).filter((item) => item.exhausted).length,
       lastRunAt: source.lastRunAt
     };
   }
@@ -113,4 +123,4 @@ function createCrawlState(options = {}) {
   return { seed, take, addDiscovered, markVisited, markFailed, markRun, stats };
 }
 
-module.exports = { DEFAULT_PATH, readState, writeState, createCrawlState };
+module.exports = { DEFAULT_PATH, DEFAULT_MAX_RETRIES, readState, writeState, createCrawlState };

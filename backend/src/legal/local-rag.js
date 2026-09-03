@@ -4,12 +4,12 @@ const crypto = require("crypto");
 const { IRAN_LEGAL_SEED } = require("./iran-seed");
 const { createEvidenceRepository } = require("./evidence-repository");
 const { createLocalIndex } = require("./local-index");
+const { chunkEvidenceCollection } = require("./chunker");
 const { normalizeEvidence, validateEvidence } = require("./evidence");
 
 const DEFAULT_SNAPSHOT_PATH = path.resolve(
   process.env.LEGAL_RAG_SNAPSHOT || path.join(__dirname, "../../data/legal-rag.json")
 );
-
 const DEFAULT_BACKUP_PATH = path.resolve(
   process.env.LEGAL_RAG_BACKUP || `${DEFAULT_SNAPSHOT_PATH}.last-good.json`
 );
@@ -26,25 +26,20 @@ function validateRecords(records) {
 }
 
 function parseSnapshotFile(snapshotPath) {
-  const raw = fs.readFileSync(snapshotPath, "utf8");
-  const parsed = JSON.parse(raw);
+  const parsed = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
   if (!Array.isArray(parsed.records)) throw new Error("RAG_SNAPSHOT_RECORDS_INVALID");
   return parsed;
 }
 
 function readSnapshot(snapshotPath = DEFAULT_SNAPSHOT_PATH, backupPath = DEFAULT_BACKUP_PATH) {
   try {
-    if (fs.existsSync(snapshotPath)) {
-      return parseSnapshotFile(snapshotPath);
-    }
+    if (fs.existsSync(snapshotPath)) return parseSnapshotFile(snapshotPath);
   } catch (error) {
     console.error("Primary Local RAG snapshot invalid; trying last-good backup:", error.message);
   }
 
   try {
-    if (fs.existsSync(backupPath)) {
-      return parseSnapshotFile(backupPath);
-    }
+    if (fs.existsSync(backupPath)) return parseSnapshotFile(backupPath);
   } catch (error) {
     console.error("Last-good Local RAG snapshot invalid:", error.message);
   }
@@ -55,18 +50,13 @@ function readSnapshot(snapshotPath = DEFAULT_SNAPSHOT_PATH, backupPath = DEFAULT
 function writeSnapshot(records, snapshotPath = DEFAULT_SNAPSHOT_PATH, backupPath = DEFAULT_BACKUP_PATH) {
   const directory = path.dirname(snapshotPath);
   fs.mkdirSync(directory, { recursive: true });
-
   const normalizedRecords = validateRecords(records);
-  const payload = JSON.stringify(
-    {
-      version: 2,
-      generatedAt: new Date().toISOString(),
-      recordCount: normalizedRecords.length,
-      records: normalizedRecords
-    },
-    null,
-    2
-  );
+  const payload = JSON.stringify({
+    version: 2,
+    generatedAt: new Date().toISOString(),
+    recordCount: normalizedRecords.length,
+    records: normalizedRecords
+  }, null, 2);
 
   const tempPath = `${snapshotPath}.${process.pid}.tmp`;
   fs.writeFileSync(tempPath, payload, "utf8");
@@ -92,7 +82,13 @@ function createLocalRag(options = {}) {
   const snapshot = readSnapshot(snapshotPath, backupPath);
   const initialRecords = snapshot?.records?.length ? snapshot.records : IRAN_LEGAL_SEED;
   const repository = createEvidenceRepository(initialRecords);
-  const index = createLocalIndex(repository.all());
+
+  function buildIndex() {
+    const chunks = chunkEvidenceCollection(repository.all(), options.chunking);
+    return createLocalIndex(chunks);
+  }
+
+  let index = buildIndex();
 
   function list(filters = {}) {
     return repository.list(filters);
@@ -103,7 +99,8 @@ function createLocalRag(options = {}) {
   }
 
   function rebuildIndex() {
-    return index.rebuild(repository.all());
+    index = buildIndex();
+    return index.stats();
   }
 
   function replaceAll(records, { persist = true } = {}) {
@@ -139,14 +136,7 @@ function createLocalRag(options = {}) {
     };
   }
 
-  return {
-    list,
-    search,
-    replaceAll,
-    addMany,
-    rebuildIndex,
-    health
-  };
+  return { list, search, replaceAll, addMany, rebuildIndex, health };
 }
 
 const localRag = createLocalRag();

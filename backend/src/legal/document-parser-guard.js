@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const zlib = require("zlib");
 
 const DEFAULTS = Object.freeze({
   maxDocumentBytes: 25 * 1024 * 1024,
@@ -9,7 +10,8 @@ const DEFAULTS = Object.freeze({
   maxZipUncompressedBytes: 32 * 1024 * 1024,
   maxZipEntryUncompressedBytes: 8 * 1024 * 1024,
   maxZipCompressionRatio: 200,
-  maxPathLength: 240
+  maxPathLength: 240,
+  maxXmlBytesToInspect: 2 * 1024 * 1024
 });
 
 function fail(code, details = {}) {
@@ -53,6 +55,32 @@ function findEndOfCentralDirectory(buffer) {
     if (buffer.readUInt32LE(i) === 0x06054b50) return i;
   }
   throw fail("ZIP_CENTRAL_DIRECTORY_NOT_FOUND");
+}
+
+function readEntryData(buffer, entry) {
+  const start = entry.localOffset;
+  if (start + 30 > buffer.length || readU32(buffer, start) !== 0x04034b50) throw fail("ZIP_LOCAL_HEADER_INVALID", { name: entry.name });
+  const nameLength = readU16(buffer, start + 26);
+  const extraLength = readU16(buffer, start + 28);
+  const dataStart = start + 30 + nameLength + extraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (dataEnd > buffer.length) throw fail("ZIP_ENTRY_DATA_RANGE_INVALID", { name: entry.name });
+  return buffer.subarray(dataStart, dataEnd);
+}
+
+function decompressEntry(buffer, entry, maxOutputBytes) {
+  const data = readEntryData(buffer, entry);
+  try {
+    if (entry.compression === 0) {
+      if (data.length > maxOutputBytes) throw fail("ZIP_XML_INSPECTION_LIMIT_EXCEEDED", { name: entry.name });
+      return data;
+    }
+    if (entry.compression === 8) return zlib.inflateRawSync(data, { maxOutputLength: maxOutputBytes });
+  } catch (error) {
+    if (error?.code === "ZIP_XML_INSPECTION_LIMIT_EXCEEDED") throw error;
+    throw fail("ZIP_ENTRY_DECOMPRESSION_FAILED", { name: entry.name });
+  }
+  throw fail("ZIP_COMPRESSION_METHOD_REJECTED", { name: entry.name, compression: entry.compression });
 }
 
 function inspectZipCentralDirectory(buffer, options = {}) {
@@ -115,19 +143,12 @@ function inspectZipCentralDirectory(buffer, options = {}) {
 
   const xmlEntries = result.filter((entry) => /\.(xml|rels)$/i.test(entry.name));
   for (const entry of xmlEntries) {
-    const start = entry.localOffset;
-    if (start + 30 > buffer.length || readU32(buffer, start) !== 0x04034b50) throw fail("ZIP_LOCAL_HEADER_INVALID", { name: entry.name });
-    const nameLength = readU16(buffer, start + 26);
-    const extraLength = readU16(buffer, start + 28);
-    const dataStart = start + 30 + nameLength + extraLength;
-    const dataEnd = dataStart + entry.compressedSize;
-    if (dataEnd > buffer.length) throw fail("ZIP_ENTRY_DATA_RANGE_INVALID", { name: entry.name });
-    if (entry.compression === 0) {
-      const xml = buffer.subarray(dataStart, dataEnd).toString("utf8");
-      if (/<\!DOCTYPE\b/i.test(xml) || /<!ENTITY\b/i.test(xml) || /SYSTEM\s*["']/i.test(xml) || /PUBLIC\s*["']/i.test(xml)) {
-        throw fail("DOCX_XML_EXTERNAL_ENTITY_REJECTED", { name: entry.name });
-      }
+    const xml = decompressEntry(buffer, entry, Math.min(cfg.maxXmlBytesToInspect, entry.uncompressedSize));
+    const text = xml.toString("utf8");
+    if (/<\!DOCTYPE\b/i.test(text) || /<!ENTITY\b/i.test(text) || /SYSTEM\s*["']/i.test(text) || /PUBLIC\s*["']/i.test(text)) {
+      throw fail("DOCX_XML_EXTERNAL_ENTITY_REJECTED", { name: entry.name });
     }
+    if (/xinclude|xi:include/i.test(text)) throw fail("DOCX_XINCLUDE_REJECTED", { name: entry.name });
   }
 
   return { entries: result, entryCount: result.length, totalUncompressedBytes: totalUncompressed };

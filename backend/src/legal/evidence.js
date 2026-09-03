@@ -1,10 +1,8 @@
 const crypto = require("crypto");
+const { IRAN_SOURCE_TYPES } = require("./iran-source-taxonomy");
 
 const SOURCE_TYPES = new Set([
-  "constitution",
-  "statute",
-  "regulation",
-  "bylaw",
+  ...Object.values(IRAN_SOURCE_TYPES).map((item) => item.code),
   "court_decision",
   "official_guidance",
   "other_official"

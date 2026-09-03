@@ -3,6 +3,7 @@ const cors = require("cors");
 const axios = require("axios");
 const { createLegalRequest } = require("./src/legal/core");
 const { localRag } = require("./src/legal/local-rag");
+const { startLegalAgent, notifications, watches } = require("./src/legal/legal-agent");
 require("dotenv").config();
 
 const app = express();
@@ -10,6 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// تست سرور
 app.get("/", (req, res) => {
   res.send("OK");
 });
@@ -18,18 +20,35 @@ app.get("/ping", (req, res) => {
   res.send("pong");
 });
 
+// سلامت RAG کاملاً محلی؛ این مسیر به منابع حقوقی خارجی وابسته نیست.
 app.get("/legal/rag/health", (req, res) => {
-  return res.json({
-    ok: true,
-    rag: localRag.health(),
-    queryPath: "local-only"
-  });
+  return res.json(localRag.health());
 });
 
-// چت AI - مسیر موجود بدون تغییر رفتاری
+// فهرست آخرین قوانین/رکوردهای جدید ثبت‌شده در corpus محلی.
+app.get("/legal/laws/new", (req, res) => {
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 20));
+  const items = notifications
+    .list({ type: "new_law" })
+    .slice(0, limit)
+    .map((item) => ({
+      id: item.id,
+      createdAt: item.createdAt,
+      title: item.title,
+      message: item.message,
+      citation: item.citation || null,
+      sourceUrl: item.sourceUrl || null,
+      legalEvidenceId: item.legalEvidenceId || null,
+      jurisdiction: item.jurisdiction || null
+    }));
+  return res.json({ count: items.length, items });
+});
+
+// مسیر چت AI - رفتار موجود حفظ شده است.
 app.post("/chat", async (req, res) => {
   try {
     const message = req.body.message;
+
     const apiKey = process.env.OPENROUTER_API_KEY;
 
     if (!apiKey) {
@@ -64,6 +83,7 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// مسیر Legal AI با RAG محلی شاه‌اثر.
 app.post("/legal/chat", async (req, res) => {
   try {
     const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
@@ -144,4 +164,10 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log("Server running on", PORT);
+  if (process.env.LEGAL_AGENT_ENABLED !== "false") {
+    startLegalAgent();
+    console.log("Legal update agent enabled");
+  }
 });
+
+module.exports = { app, watches, notifications };

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "countries": {
+    "IR": {
+      "status": "bootstrapping",
+      "bootstrapComplete": false,
+      "coverageVerified": false,
+      "validatedAt": null,
+      "recordCount": 5,
+      "lastSyncAt": null,
+      "lastError": null
+    },
+    "DE": {
+      "status": "planned",
+      "bootstrapComplete": false,
+      "coverageVerified": false,
+      "validatedAt": null,
+      "recordCount": 0,
+      "lastSyncAt": null,
+      "lastError": null
+    },
+    "US": {
+      "status": "planned",
+      "bootstrapComplete": false,
+      "coverageVerified": false,
+      "validatedAt": null,
+      "recordCount": 0,
+      "lastSyncAt": null,
+      "lastError": null
+    }
+  }
+}

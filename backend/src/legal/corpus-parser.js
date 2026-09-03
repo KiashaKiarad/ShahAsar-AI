@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { URL } = require("url");
 const { IRAN_SOURCE_TYPES } = require("./iran-source-taxonomy");
 const { normalizeForSearch } = require("./retriever");
 const { ingestEvidence } = require("./ingestor");
@@ -71,8 +72,11 @@ function inferSourceType(sourceId, text, url) {
 }
 
 function extractDate(text, labels) {
-  const labelPattern = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const match = normalizeDigits(text).match(new RegExp(`(?:${labelPattern})\\s*[:：]?\\s*(13\\d{2}|14\\d{2})[\\/-](0?[1-9]|1[0-2])[\\/-](0?[1-9]|[12]\\d|3[01])`, "i"));
+  const escapedLabels = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const labelPattern = escapedLabels.join("|");
+  const match = normalizeDigits(text).match(
+    new RegExp(`(?:${labelPattern})\\s*[:：]?\\s*(13\\d{2}|14\\d{2})[\\/-](0?[1-9]|1[0-2])[\\/-](0?[1-9]|[12]\\d|3[01])`, "i")
+  );
   if (!match) return null;
   return `${match[1]}-${String(match[2]).padStart(2, "0")}-${String(match[3]).padStart(2, "0")}`;
 }
@@ -80,12 +84,11 @@ function extractDate(text, labels) {
 function splitArticles(text) {
   const source = cleanText(text);
   const normalized = normalizeDigits(source);
-  const marker = /(?:^|\n|\s)(ماده|مادهٔ|ماده‌|ماده)\s*([0-9]{1,4}|[۰-۹]{1,4})\s*(?:\.|-|:|：)?/giu;
+  const marker = /(?:^|\n|\s)(?:ماده|مادهٔ|ماده‌)\s*([0-9]{1,4})\s*(?:\.|-|:|：)?/giu;
   const matches = [];
   let match;
   while ((match = marker.exec(normalized))) {
-    const rawNumber = match[2].replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)));
-    matches.push({ index: match.index, number: rawNumber, end: marker.lastIndex });
+    matches.push({ index: match.index, number: match[1], end: marker.lastIndex });
   }
 
   if (matches.length < 2) return [];
@@ -103,11 +106,7 @@ function splitArticles(text) {
 }
 
 function buildId(sourceId, url, article = "") {
-  return `${sourceId}-${crypto
-    .createHash("sha256")
-    .update(`${url}::${article}`)
-    .digest("hex")
-    .slice(0, 24)}`;
+  return `${sourceId}-${crypto.createHash("sha256").update(`${url}::${article}`).digest("hex").slice(0, 24)}`;
 }
 
 function parseLegalPage({ source, url, html }) {

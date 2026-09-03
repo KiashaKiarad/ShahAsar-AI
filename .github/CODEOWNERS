@@ -1,0 +1,7 @@
+# Security-sensitive legal core requires owner review.
+/backend/src/legal/* @KiashaKiarad
+/backend/src/legal/country-policy.js @KiashaKiarad
+/backend/src/legal/country-sources.js @KiashaKiarad
+/backend/src/legal/legal-agent.js @KiashaKiarad
+/backend/src/legal/ingestion-policy.js @KiashaKiarad
+/.github/workflows/* @KiashaKiarad

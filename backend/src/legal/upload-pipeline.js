@@ -6,13 +6,15 @@ const {
   quarantineBuffer,
   requireVirusScanResult
 } = require("./document-intake");
+const { validateCleanDocument } = require("./document-parser-guard");
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
-function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_BYTES, virusScanner } = {}) {
+function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_BYTES, virusScanner, documentValidator = validateCleanDocument } = {}) {
   if (typeof quarantineDir !== "string" || !quarantineDir.trim()) throw new Error("QUARANTINE_DIR_REQUIRED");
   if (typeof cleanDir !== "string" || !cleanDir.trim()) throw new Error("CLEAN_DIR_REQUIRED");
   if (typeof virusScanner !== "function") throw new Error("VIRUS_SCANNER_REQUIRED");
+  if (typeof documentValidator !== "function") throw new Error("DOCUMENT_VALIDATOR_REQUIRED");
 
   const quarantineRoot = path.resolve(quarantineDir);
   const cleanRoot = path.resolve(cleanDir);
@@ -30,10 +32,12 @@ function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_
       }
 
       const quarantined = await quarantineBuffer(buffer, { quarantineDir: quarantineRoot });
-      let scan;
       try {
-        scan = await virusScanner({ path: quarantined.path, type: validation.type, sha256: quarantined.sha256 });
+        const scan = await virusScanner({ path: quarantined.path, type: validation.type, sha256: quarantined.sha256 });
         requireVirusScanResult(scan);
+
+        const parserResult = documentValidator({ type: validation.type, buffer, maxDocumentBytes: maxBytes });
+        if (!parserResult || parserResult.type !== validation.type) throw new Error("DOCUMENT_VALIDATION_RESULT_INVALID");
 
         const cleanId = crypto.randomUUID();
         const extension = validation.type === "pdf" ? ".pdf" : validation.type === "docx" ? ".docx" : ".txt";
@@ -49,6 +53,7 @@ function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_
           type: validation.type,
           size: quarantined.size,
           sha256: quarantined.sha256,
+          parser: parserResult,
           path: target,
           scanStatus: "clean",
           status: "accepted"

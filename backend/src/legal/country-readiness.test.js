@@ -7,14 +7,22 @@ const { createCountryReadiness } = require("./country-readiness");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shahasar-country-"));
 const readiness = createCountryReadiness({ filePath: path.join(dir, "readiness.json") });
 
-assert.strictEqual(readiness.isActive("IR"), false);
-assert.throws(
-  () => readiness.set("IR", { status: "ready", bootstrapComplete: true, coverageVerified: false, validatedAt: new Date().toISOString() }),
-  /COUNTRY_CANNOT_BE_READY_WITHOUT_VERIFIED_BOOTSTRAP/
-);
+for (const code of ["AE", "SA", "KW", "OM"]) {
+  assert.strictEqual(readiness.isActive(code), false);
+  assert.throws(
+    () => readiness.set(code, {
+      status: "ready",
+      bootstrapComplete: false,
+      coverageVerified: false,
+      validatedAt: null
+    }),
+    /COUNTRY_CANNOT_BE_READY_WITHOUT_VERIFIED_BOOTSTRAP/
+  );
+}
 
+assert.deepStrictEqual(readiness.active(), []);
 const now = new Date().toISOString();
-readiness.set("IR", {
+readiness.set("AE", {
   status: "ready",
   bootstrapComplete: true,
   coverageVerified: true,
@@ -24,8 +32,9 @@ readiness.set("IR", {
   lastError: null
 });
 
-assert.strictEqual(readiness.isActive("ir"), true);
+assert.strictEqual(readiness.isActive("AE"), true);
+assert.strictEqual(readiness.isActive("SA"), false);
 assert.strictEqual(readiness.active().length, 1);
-assert.strictEqual(readiness.get("IR").recordCount, 100);
+assert.strictEqual(readiness.get("AE").recordCount, 100);
 
 console.log("COUNTRY_READINESS_TEST_OK");

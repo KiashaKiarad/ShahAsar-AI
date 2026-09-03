@@ -1,0 +1,65 @@
+name: Shah Asar Legal Security Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - legal-core-safe-integration
+
+permissions:
+  contents: read
+
+jobs:
+  legal-security-gate:
+    name: legal-security-gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify fixed jurisdiction boundary
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const expected = ['IR','DE','US','AE','SA','KW','OM','TR','IT'];
+          const policy = require('./src/legal/country-policy');
+          if (JSON.stringify(policy.SUPPORTED_JURISDICTIONS) !== JSON.stringify(expected)) {
+            throw new Error('FIXED_COUNTRY_ALLOWLIST_CHANGED');
+          }
+          const source = require('./src/legal/country-sources');
+          const sourceKeys = Object.keys(source.COUNTRY_LEGAL_SOURCES).sort();
+          if (JSON.stringify(sourceKeys) !== JSON.stringify([...expected].sort())) {
+            throw new Error('COUNTRY_SOURCE_REGISTRY_CHANGED');
+          }
+          const readinessPath = path.join(__dirname, 'data/legal-country-readiness.json');
+          if (fs.existsSync(readinessPath)) {
+            const readiness = JSON.parse(fs.readFileSync(readinessPath, 'utf8'));
+            const readinessKeys = Object.keys(readiness.countries || {}).sort();
+            if (JSON.stringify(readinessKeys) !== JSON.stringify([...expected].sort())) {
+              throw new Error('COUNTRY_READINESS_BOUNDARY_CHANGED');
+            }
+          }
+          for (const code of ['AO','FR','CN','GB','BR','XX']) {
+            if (policy.isSupportedJurisdiction(code)) throw new Error(`UNSUPPORTED_COUNTRY_ACCEPTED:${code}`);
+          }
+          console.log('Fixed jurisdiction boundary verified:', expected.join(','));
+          NODE
+
+      - name: Run legal unit tests
+        run: npm test

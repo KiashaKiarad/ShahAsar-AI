@@ -154,6 +154,14 @@ function inspectZipCentralDirectory(buffer, options = {}) {
   return { entries: result, entryCount: result.length, totalUncompressedBytes: totalUncompressed };
 }
 
+function readSafeZipEntry(buffer, entryName, options = {}) {
+  const inspected = inspectZipCentralDirectory(buffer, options);
+  const entry = inspected.entries.find((item) => item.name === entryName);
+  if (!entry) throw fail("ZIP_ENTRY_NOT_FOUND", { name: entryName });
+  const maxOutputBytes = Math.min(Number(options.maxOutputBytes || DEFAULTS.maxExtractedTextBytes), entry.uncompressedSize);
+  return decompressEntry(buffer, entry, maxOutputBytes);
+}
+
 function validatePlainText(buffer, maxBytes) {
   ensureBuffer(buffer);
   if (buffer.length > maxBytes) throw fail("TEXT_SIZE_LIMIT_EXCEEDED");
@@ -191,6 +199,7 @@ module.exports = {
   DEFAULTS,
   looksLikePdf,
   inspectZipCentralDirectory,
+  readSafeZipEntry,
   validatePlainText,
   validateCleanDocument
 };

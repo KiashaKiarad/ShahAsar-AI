@@ -5,17 +5,21 @@ const JURISDICTIONS = {
   AE: { code: "AE", name_fa: "امارات متحده عربی", name_en: "United Arab Emirates", language: "ar", status: "planned" },
   SA: { code: "SA", name_fa: "عربستان سعودی", name_en: "Saudi Arabia", language: "ar", status: "planned" },
   KW: { code: "KW", name_fa: "کویت", name_en: "Kuwait", language: "ar", status: "planned" },
-  OM: { code: "OM", name_fa: "عمان", name_en: "Oman", language: "ar", status: "planned" }
+  OM: { code: "OM", name_fa: "عمان", name_en: "Oman", language: "ar", status: "planned" },
+  TR: { code: "TR", name_fa: "ترکیه", name_en: "Turkey", language: "tr", status: "planned" },
+  IT: { code: "IT", name_fa: "ایتالیا", name_en: "Italy", language: "it", status: "planned" }
 };
 
 const KEYWORDS = [
   { code: "IR", words: ["ایران", "ایرانی", "قانون ایران", "قوانین ایران", "دادگاه ایران", "حقوق ایران", "تهران", "تبریز", "رشت"] },
   { code: "DE", words: ["آلمان", "قانون آلمان", "حقوق آلمان", "دادگاه آلمان", "germany", "german", "deutschland", "deutsches recht"] },
   { code: "US", words: ["آمریکا", "ایالات متحده", "قانون آمریکا", "حقوق آمریکا", "دادگاه آمریکا", "united states", "american law", "us law"] },
-  { code: "AE", words: ["امارات", "امارات متحده عربی", "قانون امارات", "حقوق امارات", "دبی", "ابوظبی", "uae", "united arab emirates"] },
-  { code: "SA", words: ["عربستان", "عربستان سعودی", "قانون عربستان", "حقوق عربستان", "ریاض", "جده", "saudi arabia", "saudi law"] },
-  { code: "KW", words: ["کویت", "قانون کویت", "حقوق کویت", "دادگاه کویت", "kuwait", "kuwait law"] },
-  { code: "OM", words: ["عمان", "سلطنت عمان", "قانون عمان", "حقوق عمان", "مسقط", "oman", "oman law"] }
+  { code: "AE", words: ["امارات", "امارات متحده عربی", "قانون امارات", "حقوق امارات", "دبی", "ابوظبی", "uae", "united arab emirates", "مارات"] },
+  { code: "SA", words: ["عربستان", "عربستان سعودی", "قانون عربستان", "حقوق عربستان", "ریاض", "السعودية", "saudi arabia", "saudi law"] },
+  { code: "KW", words: ["کویت", "قانون کویت", "حقوق کویت", "دولت کویت", "kuwait", "kuwaiti law"] },
+  { code: "OM", words: ["عمان", "سلطنت عمان", "قانون عمان", "حقوق عمان", "مسقط", "oman", "oman law"] },
+  { code: "TR", words: ["ترکیه", "قانون ترکیه", "حقوق ترکیه", "دادگاه ترکیه", "استانبول", "آنکارا", "turkey", "turkish law", "türkiye", "türk hukuku"] },
+  { code: "IT", words: ["ایتالیا", "قانون ایتالیا", "حقوق ایتالیا", "دادگاه ایتالیا", "رم", "میلان", "italy", "italian law", "italia", "diritto italiano"] }
 ];
 
 function normalizeText(value) {
@@ -32,8 +36,7 @@ function detectJurisdiction({ query, requestedJurisdiction } = {}) {
   const [topCode, topScore] = ranked[0] || [];
   if (!topCode || !topScore) return { jurisdiction: null, confidence: 0, source: "undetermined" };
   const secondScore = ranked[1]?.[1] || 0;
-  const confidence = topScore === secondScore ? 0.5 : Math.min(0.95, 0.55 + topScore * 0.1);
-  return { jurisdiction: JURISDICTIONS[topCode], confidence, source: "keyword" };
+  return { jurisdiction: JURISDICTIONS[topCode], confidence: topScore === secondScore ? 0.5 : Math.min(0.95, 0.55 + topScore * 0.1), source: "keyword" };
 }
 
 module.exports = { JURISDICTIONS, detectJurisdiction };

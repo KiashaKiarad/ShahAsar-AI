@@ -1,5 +1,6 @@
 const { URL } = require("url");
 const { spawn } = require("child_process");
+const crypto = require("crypto");
 const axios = require("axios");
 const { validateSourceUrl } = require("./ingestion-policy");
 const { parseLegalPage } = require("./corpus-parser");
@@ -13,6 +14,7 @@ const { IRAN_SOURCE_TYPES } = require("./iran-source-taxonomy");
 const { ingestEvidence } = require("./ingestor");
 
 const DEFAULT_INTERVAL_MS = Number(process.env.LEGAL_AGENT_INTERVAL_MS || 15 * 60 * 1000);
+const DEFAULT_RECHECK_MS = Number(process.env.LEGAL_AGENT_RECHECK_MS || 24 * 60 * 60 * 1000);
 const MAX_DISCOVERY_LINKS = Number(process.env.LEGAL_AGENT_DISCOVERY_LIMIT || 5000);
 const MAX_URLS_PER_RUN = Number(process.env.LEGAL_AGENT_URLS_PER_RUN || 120);
 const REQUEST_TIMEOUT_MS = Number(process.env.LEGAL_AGENT_DISCOVERY_TIMEOUT_MS || 10000);
@@ -46,45 +48,22 @@ function looksLikePdf(buffer) {
 
 function extractPdfText(buffer) {
   return new Promise((resolve, reject) => {
-    const child = spawn("pdftotext", ["-layout", "-", "-"], {
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-
+    const child = spawn("pdftotext", ["-layout", "-", "-"], { stdio: ["pipe", "pipe", "pipe"] });
     const output = [];
     const errors = [];
     let outputBytes = 0;
     let settled = false;
-
-    const finish = (error, text) => {
-      if (settled) return;
-      settled = true;
-      if (error) reject(error);
-      else resolve(text);
-    };
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(new Error("PDF_TEXT_EXTRACTION_TIMEOUT"));
-    }, PDF_TEXT_TIMEOUT_MS);
-
+    const finish = (error, text) => { if (settled) return; settled = true; error ? reject(error) : resolve(text); };
+    const timer = setTimeout(() => { child.kill("SIGKILL"); finish(new Error("PDF_TEXT_EXTRACTION_TIMEOUT")); }, PDF_TEXT_TIMEOUT_MS);
     child.stdout.on("data", (chunk) => {
       outputBytes += chunk.length;
       if (outputBytes > PDF_TEXT_MAX_BYTES) {
-        clearTimeout(timer);
-        child.kill("SIGKILL");
-        finish(new Error("PDF_TEXT_OUTPUT_LIMIT_EXCEEDED"));
-        return;
+        clearTimeout(timer); child.kill("SIGKILL"); finish(new Error("PDF_TEXT_OUTPUT_LIMIT_EXCEEDED")); return;
       }
       output.push(chunk);
     });
-
     child.stderr.on("data", (chunk) => errors.push(chunk));
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      finish(new Error(`PDF_TEXT_EXTRACTION_FAILED:${error.message}`));
-    });
-
+    child.on("error", (error) => { clearTimeout(timer); finish(new Error(`PDF_TEXT_EXTRACTION_FAILED:${error.message}`)); });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (settled) return;
@@ -95,19 +74,18 @@ function extractPdfText(buffer) {
       }
       finish(null, Buffer.concat(output).toString("utf8"));
     });
-
-    child.stdin.on("error", (error) => {
-      clearTimeout(timer);
-      finish(new Error(`PDF_INPUT_FAILED:${error.message}`));
-    });
-
+    child.stdin.on("error", (error) => { clearTimeout(timer); finish(new Error(`PDF_INPUT_FAILED:${error.message}`)); });
     child.stdin.end(buffer);
   });
 }
 
-async function fetchDocument(url) {
+async function fetchDocument(url, previous = null) {
   const checked = validateSourceUrl(url);
   if (!checked.valid) throw new Error(`SOURCE_URL_REJECTED:${checked.reason}`);
+
+  const headers = { Accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9" };
+  if (previous?.etag) headers["If-None-Match"] = previous.etag;
+  if (previous?.lastModified) headers["If-Modified-Since"] = previous.lastModified;
 
   const response = await axios.get(checked.url.toString(), {
     timeout: REQUEST_TIMEOUT_MS,
@@ -115,33 +93,33 @@ async function fetchDocument(url) {
     responseType: "arraybuffer",
     maxContentLength: MAX_DOCUMENT_BYTES,
     maxBodyLength: MAX_DOCUMENT_BYTES,
-    validateStatus: (status) => status >= 200 && status < 300,
-    headers: {
-      Accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9"
-    }
+    validateStatus: (status) => (status >= 200 && status < 300) || status === 304,
+    headers
   });
+
+  const responseMeta = {
+    etag: response.headers.etag || previous?.etag || null,
+    lastModified: response.headers["last-modified"] || previous?.lastModified || null,
+    contentType: String(response.headers["content-type"] || previous?.contentType || "").toLowerCase()
+  };
+  if (response.status === 304) return { kind: "not-modified", status: 304, ...responseMeta };
 
   const location = response.headers.location;
   if (location) {
     const redirected = absoluteUrl(checked.url.toString(), location);
-    if (!redirected || !sameOriginAllowed(checked.url.toString(), redirected)) {
-      throw new Error("SOURCE_REDIRECT_OUTSIDE_ORIGIN_REJECTED");
-    }
+    if (!redirected || !sameOriginAllowed(checked.url.toString(), redirected)) throw new Error("SOURCE_REDIRECT_OUTSIDE_ORIGIN_REJECTED");
     throw new Error("SOURCE_REDIRECT_NOT_FOLLOWED");
   }
 
   const bytes = Buffer.from(response.data || []);
   const contentType = String(response.headers["content-type"] || "").toLowerCase();
   const pdf = contentType.includes("application/pdf") || isPdfUrl(url) || looksLikePdf(bytes);
-
   if (pdf) {
     if (!looksLikePdf(bytes)) throw new Error("PDF_SIGNATURE_INVALID");
     const text = await extractPdfText(bytes);
-    return { kind: "pdf", text, contentType, bytes: bytes.length };
+    return { kind: "pdf", text, contentType, bytes: bytes.length, status: response.status, ...responseMeta };
   }
-
-  const text = bytes.toString("utf8");
-  return { kind: "html", text, contentType, bytes: bytes.length };
+  return { kind: "html", text: bytes.toString("utf8"), contentType, bytes: bytes.length, status: response.status, ...responseMeta };
 }
 
 function extractPageLinks(baseUrl, html, limit = MAX_DISCOVERY_LINKS) {
@@ -175,11 +153,8 @@ function archiveChangedRecord(previous, current) {
 function findRelatedWatches(evidence) {
   const haystack = `${evidence.title} ${evidence.citation} ${evidence.article} ${evidence.text}`.toLowerCase();
   return watches.list({ jurisdiction: evidence.jurisdiction }).filter((watch) => {
-    const terms = [watch.title, watch.metadata?.keywords || "", watch.text]
-      .join(" ")
-      .split(/\s+/)
-      .map((term) => term.toLowerCase().trim())
-      .filter((term) => term.length >= 4);
+    const terms = [watch.title, watch.metadata?.keywords || "", watch.text].join(" ").split(/\s+/)
+      .map((term) => term.toLowerCase().trim()).filter((term) => term.length >= 4);
     return terms.some((term) => haystack.includes(term));
   });
 }
@@ -187,36 +162,22 @@ function findRelatedWatches(evidence) {
 function emitLawUpdateNotifications(previous, current) {
   if (previous && previous.contentHash === current.contentHash) return 0;
   let count = 0;
-
   for (const watch of findRelatedWatches(current)) {
     notifications.add({
-      type: "legal_update",
-      status: "new",
-      ownerId: watch.ownerId,
-      relatedItemId: watch.id,
-      legalEvidenceId: current.id,
-      jurisdiction: current.jurisdiction,
+      type: "legal_update", status: "new", ownerId: watch.ownerId, relatedItemId: watch.id,
+      legalEvidenceId: current.id, jurisdiction: current.jurisdiction,
       title: `به‌روزرسانی حقوقی مرتبط با «${watch.title}»`,
       message: `رکورد «${current.title}» در RAG محلی شاه‌اثر اضافه یا تغییر کرده و با مورد تحت پایش شما مرتبط تشخیص داده شد.`,
-      citation: current.citation,
-      sourceUrl: current.sourceUrl
+      citation: current.citation, sourceUrl: current.sourceUrl
     });
     count += 1;
   }
-
   notifications.add({
-    type: "new_law",
-    status: "new",
-    ownerId: null,
-    relatedItemId: null,
-    legalEvidenceId: current.id,
-    jurisdiction: current.jurisdiction,
-    title: current.title,
+    type: "new_law", status: "new", ownerId: null, relatedItemId: null,
+    legalEvidenceId: current.id, jurisdiction: current.jurisdiction, title: current.title,
     message: "این رکورد توسط عامل خودکار پایگاه حقوقی شاه‌اثر کشف یا به‌روزرسانی شده است.",
-    citation: current.citation,
-    sourceUrl: current.sourceUrl
+    citation: current.citation, sourceUrl: current.sourceUrl
   });
-
   return count + 1;
 }
 
@@ -235,6 +196,8 @@ async function runLegalAgentOnce() {
   const failures = [];
   const discoveredBySource = {};
   let visited = 0;
+  let notModified = 0;
+  const cutoff = Date.now() - DEFAULT_RECHECK_MS;
 
   for (const source of IRAN_LEGAL_SOURCES.filter((item) => item.enabled)) {
     try {
@@ -242,6 +205,7 @@ async function runLegalAgentOnce() {
       discoveredBySource[source.id] = discovery.urls.length;
       failures.push(...discovery.failures.map((item) => ({ sourceId: source.id, ...item })));
       crawlState.seed(source.id, [source.url, ...discovery.urls]);
+      crawlState.requeueDue(source.id, cutoff, MAX_URLS_PER_RUN);
     } catch (error) {
       failures.push({ sourceId: source.id, url: source.url, error: error.message });
     }
@@ -252,12 +216,18 @@ async function runLegalAgentOnce() {
     for (const url of urls) {
       try {
         if (!sameOriginAllowed(source.url, url)) throw new Error("SOURCE_ORIGIN_REJECTED");
-        const document = await fetchDocument(url);
+        const previous = crawlState.getVisited(source.id, url);
+        const document = await fetchDocument(url, previous);
+        if (document.kind === "not-modified") {
+          crawlState.markNotModified(source.id, url, document);
+          notModified += 1;
+          continue;
+        }
         const nextLinks = document.kind === "html" ? extractPageLinks(url, document.text, MAX_DISCOVERY_LINKS) : [];
         crawlState.addDiscovered(source.id, nextLinks);
-        const parsed = parseLegalPage({ source, url, html: document.text });
-        candidates.push(...parsed);
-        crawlState.markVisited(source.id, url);
+        candidates.push(...parseLegalPage({ source, url, html: document.text }));
+        const contentHash = crypto.createHash("sha256").update(document.text).digest("hex");
+        crawlState.markVisited(source.id, url, { ...document, contentHash });
         visited += 1;
       } catch (error) {
         crawlState.markFailed(source.id, url, error.message);
@@ -271,96 +241,61 @@ async function runLegalAgentOnce() {
   const changed = [];
   const archived = [];
   let unchanged = 0;
-
   for (const record of deduped) {
     const previous = beforeById.get(record.id) || null;
-    if (previous && previous.contentHash === record.contentHash) {
-      unchanged += 1;
-      continue;
-    }
+    if (previous && previous.contentHash === record.contentHash) { unchanged += 1; continue; }
     const historical = archiveChangedRecord(previous, record);
     if (historical) archived.push(historical);
     changed.push(record);
   }
 
   let notificationsCreated = 0;
-  for (const record of changed) {
-    notificationsCreated += emitLawUpdateNotifications(beforeById.get(record.id) || null, record);
-  }
+  for (const record of changed) notificationsCreated += emitLawUpdateNotifications(beforeById.get(record.id) || null, record);
 
-  if (changed.length || archived.length) {
-    const merged = mergeCanonical(before, changed, archived);
-    localRag.replaceAll(merged, { persist: true });
-  }
+  if (changed.length || archived.length) localRag.replaceAll(mergeCanonical(before, changed, archived), { persist: true });
 
   const result = {
     attemptedSources: IRAN_LEGAL_SOURCES.filter((item) => item.enabled).length,
-    discoveredBySource,
-    visited,
-    parsedRecords: candidates.length,
-    acceptedRecords: deduped.length,
-    updated: changed.length,
-    unchanged,
-    historicalVersions: archived.length,
-    failed: failures.length,
-    failures,
-    notificationsCreated,
+    discoveredBySource, visited, notModified,
+    parsedRecords: candidates.length, acceptedRecords: deduped.length,
+    updated: changed.length, unchanged, historicalVersions: archived.length,
+    failed: failures.length, failures, notificationsCreated,
     corpusRecordCount: localRag.health().recordCount,
     crawl: Object.fromEntries(IRAN_LEGAL_SOURCES.map((source) => [source.id, crawlState.stats(source.id)])),
-    degraded: failures.length > 0,
-    completedAt: new Date().toISOString()
+    degraded: failures.length > 0, completedAt: new Date().toISOString()
   };
 
   notifications.add({
-    type: "agent_run",
-    status: result.degraded ? "degraded" : "success",
-    ownerId: null,
-    relatedItemId: null,
-    legalEvidenceId: null,
+    type: "agent_run", status: result.degraded ? "degraded" : "success",
+    ownerId: null, relatedItemId: null, legalEvidenceId: null,
     title: "گزارش عامل پایش و جمع‌آوری قوانین شاه‌اثر",
-    message: `اجرای Agent: ${result.updated} رکورد جدید/تغییریافته، ${result.historicalVersions} نسخه تاریخی و ${result.failed} خطا.`,
+    message: `اجرای Agent: ${result.updated} رکورد جدید/تغییریافته، ${result.historicalVersions} نسخه تاریخی، ${result.notModified} مورد بدون تغییر و ${result.failed} خطا.`,
     metadata: result
   });
-
   return result;
 }
 
 function startLegalAgent(options = {}) {
   const intervalMs = Number(options.intervalMs || DEFAULT_INTERVAL_MS);
   let running = false;
-
   async function tick() {
     if (running) return { skipped: true, reason: "already_running" };
     running = true;
-    try { return await runLegalAgentOnce(); }
-    finally { running = false; }
+    try { return await runLegalAgentOnce(); } finally { running = false; }
   }
-
   const timer = setInterval(() => {
-    tick().catch((error) => {
-      notifications.add({
-        type: "agent_error",
-        status: "error",
-        ownerId: null,
-        relatedItemId: null,
-        legalEvidenceId: null,
-        title: "خطای عامل پایش قوانین",
-        message: error.message
-      });
-    });
+    tick().catch((error) => notifications.add({
+      type: "agent_error", status: "error", ownerId: null, relatedItemId: null, legalEvidenceId: null,
+      title: "خطای عامل پایش قوانین", message: error.message
+    }));
   }, intervalMs);
-
   if (typeof timer.unref === "function") timer.unref();
   tick().catch(() => {});
   return { intervalMs, tick, stop: () => clearInterval(timer) };
 }
 
 module.exports = {
-  DEFAULT_INTERVAL_MS,
-  runLegalAgentOnce,
-  startLegalAgent,
-  notifications,
-  watches,
-  crawlState,
-  extractPdfText
+  DEFAULT_INTERVAL_MS, DEFAULT_RECHECK_MS,
+  runLegalAgentOnce, startLegalAgent,
+  notifications, watches, crawlState, extractPdfText
 };

@@ -9,7 +9,7 @@ function buildLegalSystemPrompt(jurisdiction, evidence = []) {
     : "نامشخص";
 
   const evidenceText = evidence.length
-    ? `Verified evidence count: ${evidence.length}. Use only the supplied evidence for source-based legal claims.`
+    ? `Verified evidence count: ${evidence.length}. Use only the supplied local evidence for source-based legal claims.`
     : "Verified evidence count: 0. Do not present uncited legal propositions as retrieved law.";
 
   const citations = evidence.length
@@ -24,6 +24,7 @@ function buildLegalSystemPrompt(jurisdiction, evidence = []) {
     `Target jurisdiction: ${jurisdictionText}.`,
     evidenceText,
     `Evidence citations:\n${citations}`,
+    "Legal retrieval is local-server only. Never browse or request an external legal source during a user query.",
     "Never silently mix laws from different jurisdictions.",
     "If jurisdiction is unknown or the available evidence is insufficient, say so clearly.",
     "Do not invent statutes, article numbers, cases, citations, dates, or legal authorities.",
@@ -44,22 +45,26 @@ function createLegalRequest({ message, jurisdiction, evidence, asOfDate, topK = 
     requestedJurisdiction: jurisdiction
   });
 
-  const evidencePool = Array.isArray(evidence)
-    ? filterEvidence(evidence, {
-        jurisdiction: detection.jurisdiction?.code,
-        asOfDate
-      })
-    : localRag.list({
-        jurisdiction: detection.jurisdiction?.code,
-        asOfDate
-      });
-
-  const retrieved = retrieveEvidence(message, evidencePool, {
-    jurisdiction: detection.jurisdiction?.code,
-    asOfDate,
-    topK,
-    minScore: 0
-  });
+  let retrieved;
+  if (Array.isArray(evidence)) {
+    const verifiedEvidence = filterEvidence(evidence, {
+      jurisdiction: detection.jurisdiction?.code,
+      asOfDate
+    });
+    retrieved = retrieveEvidence(message, verifiedEvidence, {
+      jurisdiction: detection.jurisdiction?.code,
+      asOfDate,
+      topK,
+      minScore: 0
+    });
+  } else {
+    retrieved = localRag.search(message, {
+      jurisdiction: detection.jurisdiction?.code,
+      asOfDate,
+      topK,
+      minScore: 0
+    });
+  }
 
   const retrievedEvidence = retrieved.map((item) => item.evidence);
 
@@ -76,7 +81,9 @@ function createLegalRequest({ message, jurisdiction, evidence, asOfDate, topK = 
       evidenceId: item.evidence.id,
       score: item.score,
       citation: item.evidence.citation,
-      article: item.evidence.article
+      article: item.evidence.article,
+      parentId: item.evidence.parentId || null,
+      chunkIndex: Number.isInteger(item.evidence.chunkIndex) ? item.evidence.chunkIndex : null
     })),
     systemPrompt: buildLegalSystemPrompt(detection.jurisdiction, retrievedEvidence)
   };

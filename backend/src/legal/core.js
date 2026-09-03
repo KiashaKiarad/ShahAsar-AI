@@ -1,7 +1,5 @@
 const { detectJurisdiction } = require("./jurisdiction");
-const { filterEvidence } = require("./evidence");
-const { retrieveEvidence } = require("./retriever");
-const { IRAN_LEGAL_SEED } = require("./iran-seed");
+const { localRag } = require("./local-rag");
 
 function buildLegalSystemPrompt(jurisdiction, evidence = []) {
   const jurisdictionText = jurisdiction
@@ -33,8 +31,9 @@ function buildLegalSystemPrompt(jurisdiction, evidence = []) {
 }
 
 function getDefaultKnowledgeBase(jurisdictionCode) {
-  if (String(jurisdictionCode || "").toUpperCase() === "IR") return IRAN_LEGAL_SEED;
-  return [];
+  return localRag.list({
+    jurisdiction: jurisdictionCode ? String(jurisdictionCode).toUpperCase() : undefined
+  });
 }
 
 function createLegalRequest({ message, jurisdiction, evidence, asOfDate, topK = 5 } = {}) {
@@ -43,17 +42,27 @@ function createLegalRequest({ message, jurisdiction, evidence, asOfDate, topK = 
     requestedJurisdiction: jurisdiction
   });
 
-  const suppliedEvidence = Array.isArray(evidence) ? evidence : getDefaultKnowledgeBase(detection.jurisdiction?.code);
-  const verifiedEvidence = filterEvidence(suppliedEvidence, {
-    jurisdiction: detection.jurisdiction?.code,
-    asOfDate
-  });
-  const retrieved = retrieveEvidence(message, verifiedEvidence, {
-    jurisdiction: detection.jurisdiction?.code,
-    asOfDate,
-    topK,
-    minScore: 0
-  });
+  const requestedEvidence = Array.isArray(evidence)
+    ? evidence
+    : localRag.list({
+        jurisdiction: detection.jurisdiction?.code,
+        asOfDate
+      });
+
+  const retrieved = Array.isArray(evidence)
+    ? require("./local-rag").createLocalRag().search(message, {
+        jurisdiction: detection.jurisdiction?.code,
+        asOfDate,
+        topK,
+        minScore: 0
+      })
+    : localRag.search(message, {
+        jurisdiction: detection.jurisdiction?.code,
+        asOfDate,
+        topK,
+        minScore: 0
+      });
+
   const retrievedEvidence = retrieved.map((item) => item.evidence);
 
   return {
@@ -64,6 +73,7 @@ function createLegalRequest({ message, jurisdiction, evidence, asOfDate, topK = 
     needsJurisdictionClarification: !detection.jurisdiction,
     evidence: retrievedEvidence,
     evidenceCount: retrievedEvidence.length,
+    knowledgeBase: "local-server",
     retrieval: retrieved.map((item) => ({
       evidenceId: item.evidence.id,
       score: item.score,

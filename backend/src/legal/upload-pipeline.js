@@ -5,16 +5,16 @@ const { validateUploadMetadata, quarantineBuffer, requireVirusScanResult } = req
 const { validateCleanDocument } = require("./document-parser-guard");
 const { extractDocumentText } = require("./document-extraction");
 const { createDocumentRecord } = require("./document-record");
+const { chunkEvidence } = require("./chunker");
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
-function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_BYTES, virusScanner, documentValidator = validateCleanDocument, extractor = extractDocumentText } = {}) {
+function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_BYTES, virusScanner, documentValidator = validateCleanDocument, extractor = extractDocumentText, chunkOptions = {} } = {}) {
   if (typeof quarantineDir !== "string" || !quarantineDir.trim()) throw new Error("QUARANTINE_DIR_REQUIRED");
   if (typeof cleanDir !== "string" || !cleanDir.trim()) throw new Error("CLEAN_DIR_REQUIRED");
   if (typeof virusScanner !== "function") throw new Error("VIRUS_SCANNER_REQUIRED");
   if (typeof documentValidator !== "function") throw new Error("DOCUMENT_VALIDATOR_REQUIRED");
   if (typeof extractor !== "function") throw new Error("DOCUMENT_EXTRACTOR_REQUIRED");
-
   const quarantineRoot = path.resolve(quarantineDir);
   const cleanRoot = path.resolve(cleanDir);
   if (quarantineRoot === cleanRoot) throw new Error("QUARANTINE_AND_CLEAN_MUST_DIFFER");
@@ -29,43 +29,24 @@ function createUploadPipeline({ quarantineDir, cleanDir, maxBytes = DEFAULT_MAX_
         error.details = validation.errors;
         throw error;
       }
-
       const quarantined = await quarantineBuffer(buffer, { quarantineDir: quarantineRoot });
       try {
         const scan = await virusScanner({ path: quarantined.path, type: validation.type, sha256: quarantined.sha256 });
         requireVirusScanResult(scan);
-
         const parserResult = documentValidator({ type: validation.type, buffer, maxDocumentBytes: maxBytes });
         if (!parserResult || parserResult.type !== validation.type) throw new Error("DOCUMENT_VALIDATION_RESULT_INVALID");
-
         const extraction = await extractor({ type: validation.type, buffer });
-        if (!extraction || extraction.type !== validation.type || typeof extraction.text !== "string" || !extraction.text.trim()) {
-          throw new Error("DOCUMENT_EXTRACTION_RESULT_INVALID");
-        }
+        if (!extraction || extraction.type !== validation.type || typeof extraction.text !== "string" || !extraction.text.trim()) throw new Error("DOCUMENT_EXTRACTION_RESULT_INVALID");
         const extractedSha256 = crypto.createHash("sha256").update(extraction.text, "utf8").digest("hex");
-
         const cleanId = crypto.randomUUID();
         const extension = validation.type === "pdf" ? ".pdf" : validation.type === "docx" ? ".docx" : ".txt";
         const target = path.resolve(cleanRoot, `${cleanId}${extension}`);
         if (path.dirname(target) !== cleanRoot) throw new Error("INVALID_CLEAN_PATH");
         await fs.promises.mkdir(cleanRoot, { recursive: true, mode: 0o700 });
         await fs.promises.rename(quarantined.path, target);
-
-        const record = createDocumentRecord({
-          id: cleanId,
-          userId,
-          originalFilename: validation.safeFilename,
-          type: validation.type,
-          size: quarantined.size,
-          sha256: quarantined.sha256,
-          extractedSha256,
-          textLength: extraction.text.length,
-          parserVersion: String(parserResult.version || "1"),
-          pipelineVersion: "2",
-          source: "user-upload"
-        });
-
-        return { ...record, parser: parserResult, path: target, scanStatus: "clean", status: "accepted" };
+        const record = createDocumentRecord({ id: cleanId, userId, originalFilename: validation.safeFilename, type: validation.type, size: quarantined.size, sha256: quarantined.sha256, extractedSha256, textLength: extraction.text.length, parserVersion: String(parserResult.version || "1"), pipelineVersion: "3", source: "user-upload" });
+        const chunks = chunkEvidence({ ...record, text: extraction.text }, chunkOptions);
+        return { ...record, parser: parserResult, extraction: { type: extraction.type, textLength: extraction.text.length, sha256: extractedSha256 }, chunks, path: target, scanStatus: "clean", status: "accepted" };
       } catch (error) {
         await fs.promises.rm(quarantined.path, { force: true }).catch(() => undefined);
         throw error;

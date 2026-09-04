@@ -27,7 +27,10 @@ const ALLOWED_TYPES = Object.freeze({
 
 function normalizeFilename(filename) {
   if (typeof filename !== "string") return "";
-  return filename.normalize("NFKC").replace(/[\\/\u0000-\u001f\u007f]/g, "").trim();
+  const normalized = filename.normalize("NFKC").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const segments = normalized.split(/[\\/]+/).filter((segment) => segment && segment !== "." && segment !== "..");
+  const basename = segments.length ? segments[segments.length - 1] : "";
+  return basename.replace(/^\.+/, "").trim();
 }
 
 function isLikelyText(buffer) {
